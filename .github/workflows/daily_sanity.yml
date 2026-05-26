@@ -2,19 +2,18 @@ name: Daily DGCA Sanity Check
 
 on:
   schedule:
-    # Runs every day at 10:00 AM IST (04:30 UTC)
     - cron: '30 4 * * *'
-  workflow_dispatch:  # lets you run manually from the website
+  workflow_dispatch:
 
 jobs:
   sanity-test:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
@@ -35,7 +34,7 @@ jobs:
           RECIPIENTS: ${{ secrets.RECIPIENTS }}
         run: python daily_sanity_check.py
 
-      - name: Upload report as artifact
+      - name: Upload report
         uses: actions/upload-artifact@v4
         with:
           name: sanity-report
