@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Daily DGCA Chatbot Sanity Check – Randomized Questions
-Runs headless on GitHub Actions.
+Handles disclaimer popup, runs headless on GitHub Actions.
 """
 
 import os
@@ -21,6 +21,9 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, ElementNotInteractableException
 from docx import Document
 
 # ========== CONFIGURATION FROM ENVIRONMENT ==========
@@ -105,70 +108,102 @@ def evaluate_response(category, question, response):
     else:
         return "PASS"
 
-def ask_question(driver, question):
-    # Open chatbot widget if needed
+def accept_disclaimer(driver):
+    """Click the 'I understand' button on the disclaimer popup."""
     try:
-        toggles = driver.find_elements(By.CSS_SELECTOR,
-            ".chat-toggle, #chat-toggle, .chatbot-toggle, [aria-label*='chat']")
-        for toggle in toggles:
-            if toggle.is_displayed():
-                driver.execute_script("arguments[0].click();", toggle)
-                time.sleep(1)
-                break
-    except:
-        pass
+        accept_btn = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'I understand')]"))
+        )
+        accept_btn.click()
+        print("   Disclaimer accepted.")
+        time.sleep(2)
+        return True
+    except TimeoutException:
+        print("   No disclaimer popup found (or already accepted).")
+        return False
 
-    # Find input field
-    input_selectors = [
-        "input[placeholder*='message']",
-        "textarea[placeholder*='message']",
-        "input[placeholder*='Type']",
-        "textarea",
-        "input[type='text']"
-    ]
-    input_field = None
-    for selector in input_selectors:
-        try:
-            input_field = driver.find_element(By.CSS_SELECTOR, selector)
-            if input_field.is_displayed():
-                break
-        except:
-            continue
-    if not input_field:
-        raise Exception("Input field not found")
+def ask_question(driver, question, max_attempts=2):
+    """Send a question to the chatbot and return the response."""
+    for attempt in range(max_attempts):
+        # 1. Ensure chat widget is open (optional: click on a chat icon if needed)
+        #    Many sites open the chatbot by default, so we skip this.
 
-    input_field.clear()
-    input_field.send_keys(question)
-    time.sleep(0.5)
-
-    # Send button or Enter
-    try:
-        send_btn = driver.find_element(By.XPATH, "//button[contains(., 'Send')]")
-        driver.execute_script("arguments[0].click();", send_btn)
-    except:
-        input_field.send_keys(Keys.ENTER)
-
-    time.sleep(12)  # wait for response
-
-    # Extract response
-    response_selectors = [
-        ".bot-message", ".latest-reply", ".reply", ".message.bot", ".bubble",
-        "[class*='bot']", "[class*='reply']", "[class*='answer']"
-    ]
-    response = ""
-    for selector in response_selectors:
-        elements = driver.find_elements(By.CSS_SELECTOR, selector)
-        if elements:
-            for elem in reversed(elements):
-                txt = elem.text.strip()
-                if txt:
-                    response = txt
+        # 2. Wait for input field to be clickable
+        input_selectors = [
+            "input[placeholder*='message']",
+            "textarea[placeholder*='message']",
+            "input[placeholder*='Type']",
+            "textarea",
+            "input[type='text']"
+        ]
+        input_field = None
+        for selector in input_selectors:
+            try:
+                input_field = WebDriverWait(driver, 10).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+                )
+                if input_field:
                     break
-            if response:
-                break
-    if not response:
-        response = "Could not extract response"
-    return response
+            except:
+                continue
+        if not input_field:
+            time.sleep(3)
+            continue
+
+        # 3. Focus on the field
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", input_field)
+        time.sleep(0.5)
+        try:
+            input_field.click()
+        except:
+            driver.execute_script("arguments[0].click();", input_field)
+        time.sleep(0.5)
+
+        # 4. Clear and type
+        try:
+            input_field.clear()
+        except:
+            driver.execute_script("arguments[0].value = '';", input_field)
+        input_field.send_keys(question)
+        time.sleep(0.5)
+
+        # 5. Send message
+        sent = False
+        try:
+            send_btn = driver.find_element(By.XPATH, "//button[contains(., 'Send')]")
+            if send_btn.is_displayed() and send_btn.is_enabled():
+                driver.execute_script("arguments[0].click();", send_btn)
+                sent = True
+        except:
+            pass
+        if not sent:
+            input_field.send_keys(Keys.ENTER)
+
+        # 6. Wait for response (adjust time as needed)
+        time.sleep(12)
+
+        # 7. Extract latest response
+        response_selectors = [
+            ".bot-message", ".latest-reply", ".reply", ".message.bot", ".bubble",
+            "[class*='bot']", "[class*='reply']", "[class*='answer']"
+        ]
+        response = ""
+        for selector in response_selectors:
+            elements = driver.find_elements(By.CSS_SELECTOR, selector)
+            if elements:
+                for elem in reversed(elements):
+                    txt = elem.text.strip()
+                    if txt:
+                        response = txt
+                        break
+                if response:
+                    break
+        if response:
+            return response
+        else:
+            print(f"   No response on attempt {attempt+1}, retrying...")
+            time.sleep(3)
+    return "Could not extract response after multiple attempts"
 
 def generate_word_report(results_summary, detailed, output_filename):
     doc = Document()
@@ -273,21 +308,33 @@ def main():
                 count = len(candidates)
             selected[cat] = random.sample(candidates, count)
 
-    # Setup Chrome for GitHub Actions (Chromium)
+    # Setup Chrome for GitHub Actions
     options = Options()
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1920,1080")
-    # Explicit Chromium binary location
     options.binary_location = "/usr/bin/chromium-browser"
 
-    # Use Service with chromedriver path
     service = Service("/usr/bin/chromedriver")
     driver = webdriver.Chrome(service=service, options=options)
     driver.get(CHATBOT_URL)
     time.sleep(5)
+
+    # Accept disclaimer popup
+    accept_disclaimer(driver)
+
+    # Additional: ensure any language selection is accepted (if "English" button)
+    try:
+        eng_btn = WebDriverWait(driver, 5).until(
+            EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'ENGLISH')]"))
+        )
+        eng_btn.click()
+        print("   English language selected.")
+        time.sleep(2)
+    except:
+        pass
 
     results_summary = {}
     detailed = {}
@@ -309,6 +356,7 @@ def main():
     conv = selected["Conversation Test"]
     conv_qa = []
     for q in conv["questions"]:
+        print(f"Conversation: {q[:50]}...")
         resp = ask_question(driver, q)
         status = evaluate_response("Conversation Test", q, resp)
         conv_qa.append({"question": q, "response": resp, "status": status})
@@ -320,6 +368,7 @@ def main():
     sugg_qa = []
     all_pass = True
     for q in selected["Suggested Question"]:
+        print(f"Asking: {q['question']}")
         resp = ask_question(driver, q['question'])
         status = evaluate_response("Suggested Question", q['question'], resp)
         sugg_qa.append((q['question'], resp, status))
@@ -332,6 +381,7 @@ def main():
     pol_qa = []
     all_pass = True
     for q in selected["Political, Religious, Disruptive"]:
+        print(f"Asking: {q['question']}")
         resp = ask_question(driver, q['question'])
         status = evaluate_response("Political, Religious, Disruptive", q['question'], resp)
         pol_qa.append((q['question'], resp, status))
@@ -344,6 +394,7 @@ def main():
     comp_qa = []
     all_pass = True
     for q in selected["Complex Technical Question"]:
+        print(f"Asking: {q['question'][:80]}...")
         resp = ask_question(driver, q['question'])
         status = evaluate_response("Complex Technical Question", q['question'], resp)
         comp_qa.append((q['question'], resp, status))
@@ -356,6 +407,7 @@ def main():
     fees_qa = []
     all_pass = True
     for q in selected["Fees related Question"]:
+        print(f"Asking: {q['question']}")
         resp = ask_question(driver, q['question'])
         status = evaluate_response("Fees related Question", q['question'], resp)
         fees_qa.append((q['question'], resp, status))
@@ -368,6 +420,7 @@ def main():
     pass_qa = []
     all_pass = True
     for q in selected["Passenger Related Question"]:
+        print(f"Asking: {q['question']}")
         resp = ask_question(driver, q['question'])
         status = evaluate_response("Passenger Related Question", q['question'], resp)
         pass_qa.append((q['question'], resp, status))
@@ -380,6 +433,7 @@ def main():
     bil_qa = []
     all_pass = True
     for q in selected["Bilingual Question"]:
+        print(f"Asking: {q['question']}")
         resp = ask_question(driver, q['question'])
         status = evaluate_response("Bilingual Question", q['question'], resp)
         bil_qa.append((q['question'], resp, status))
@@ -388,7 +442,7 @@ def main():
     results_summary["Bilingual Question"] = "PASS" if all_pass else "FAIL"
     detailed["Bilingual_qa"] = bil_qa
 
-    # Manual categories
+    # Manual categories (simulated pass)
     results_summary["Disclaimer Popup"] = "PASS"
     results_summary["Feedback Submission"] = "PASS"
 
