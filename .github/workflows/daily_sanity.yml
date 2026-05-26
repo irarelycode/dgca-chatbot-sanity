@@ -36,7 +36,7 @@ jobs:
         run: python daily_sanity_check.py
 
       - name: Upload report as artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: sanity-report
           path: Sanity_Check_*.docx
