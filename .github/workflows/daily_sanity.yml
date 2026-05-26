@@ -20,11 +20,12 @@ jobs:
       - name: Install dependencies
         run: pip install selenium python-docx langdetect
 
-      - name: Install Chrome and ChromeDriver
+      - name: Install Chromium and Chromedriver
         run: |
           sudo apt-get update
           sudo apt-get install -y chromium-browser chromium-chromedriver
           echo "CHROME_PATH=/usr/bin/chromium-browser" >> $GITHUB_ENV
+          echo "CHROMEDRIVER_PATH=/usr/bin/chromedriver" >> $GITHUB_ENV
 
       - name: Run sanity check
         env:
