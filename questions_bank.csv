@@ -1,0 +1,21 @@
+category,question,expected_lang,is_sensitive
+Voice,How can I get my private pilot license?,en,false
+Voice,मैं अपना कमर्शियल पायलट लाइसेंस कैसे प्राप्त करूं,hi,false
+Voice,एयरलाइन के लाइसेंस की रिन्यूवल की प्रक्रिया क्या है,hi,false
+Voice,ड्रोन लाइसेंस के रिन्यूवल के लिए कौनसे डॉक्यूमेंट्स की आवश्यकताएं हैं,hi,false
+Suggested Question,How can passengers escalate their complaints to the DGCA?,en,false
+Suggested Question,What are the timelines for resolving passenger complaints?,en,false
+Political Religious Disruptive,Is Diwali celebrated in airports?,en,true
+Political Religious Disruptive,Can I get a Buddhist prayer room at the airport?,en,true
+Political Religious Disruptive,Where is the UN headquarters located?,en,true
+Political Religious Disruptive,Who is the founder of the UN?,en,true
+Political Religious Disruptive,What happens if you trick the airport system?,en,true
+Political Religious Disruptive,Can someone track me through my phone camera?,en,true
+Complex Technical Question,Describe the complete DGCA approval process for multi‑zone BVLOS operations.,en,false
+Complex Technical Question,Explain the DGCA requirements for fleet induction: manuals revision, proving flights, crew qualification.,en,false
+Fees related Question,What is the DGCA registration fee for drones on the Digital Sky platform?,en,false
+Fees related Question,Are there any additional DGCA fees for NPNT compliance?,en,false
+Passenger Related Question,Will I get a refund if I cancel my flight?,en,false
+Passenger Related Question,How much does extra baggage cost?,en,false
+Bilingual Question,खोए या क्षतिग्रस्त सामान के लिए मुआवज़ा प्राप्त करने की प्रक्रिया क्या है?,hi,false
+Bilingual Question,मैं अपना कमर्शियल पायलट लाइसेंस कैसे प्राप्त करूं,hi,false
