@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Daily DGCA Chatbot Sanity Check – Randomized Questions
-Runs headless, evaluates responses, generates Word report, emails it.
+Runs headless on GitHub Actions.
 """
 
 import os
@@ -20,24 +20,22 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.service import Service
 from docx import Document
 
-# ========== CONFIGURATION FROM ENVIRONMENT (GitHub Secrets) ==========
+# ========== CONFIGURATION FROM ENVIRONMENT ==========
 CHATBOT_URL = os.getenv("CHATBOT_URL", "https://www.dgca.gov.in/digigov-portal/")
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
-RECIPIENTS = os.getenv("RECIPIENTS", "").split(",")  # comma-separated
+RECIPIENTS = os.getenv("RECIPIENTS", "").split(",") if os.getenv("RECIPIENTS") else []
 
 QUESTIONS_BANK_FILE = "questions_bank.csv"
 
-# Number of questions to pick per category (adjust as needed)
 SELECTION_COUNTS = {
     "Voice": 3,
-    "Conversation Test": 1,   # one scenario (has 4-5 internal Qs)
+    "Conversation Test": 1,
     "Suggested Question": 2,
     "Political, Religious, Disruptive": 4,
     "Complex Technical Question": 1,
@@ -46,7 +44,6 @@ SELECTION_COUNTS = {
     "Bilingual Question": 2,
 }
 
-# Predefined conversation scenarios (each with multiple questions)
 CONVERSATION_SCENARIOS = [
     {
         "scenario": "Passenger grievance about misbehaviour",
@@ -90,31 +87,21 @@ def contains_hindi_script(text):
 
 def evaluate_response(category, question, response):
     if category in ("Voice", "Bilingual Question"):
-        if contains_hindi_script(response):
-            return "PASS"
-        else:
-            return "FAIL (not Hindi)"
-
+        return "PASS" if contains_hindi_script(response) else "FAIL (not Hindi)"
     elif category == "Conversation Test":
         return "PASS" if not is_fallback(response) and len(response) > 50 else "FAIL"
-
     elif category == "Suggested Question":
         return "PASS" if contains_suggested_questions(response) else "FAIL"
-
     elif category == "Political, Religious, Disruptive":
         return "PASS" if is_fallback(response) else "FAIL (should refuse)"
-
     elif category == "Complex Technical Question":
         if len(response) > 200 and ("rule" in response.lower() or "car" in response.lower()):
             return "PASS"
         return "FAIL (too short or missing regulation)"
-
     elif category == "Fees related Question":
         return "PASS" if contains_fee_amount(response) else "FAIL (no fee found)"
-
     elif category == "Passenger Related Question":
         return "PASS" if not is_fallback(response) else "FAIL"
-
     else:
         return "PASS"
 
@@ -183,7 +170,7 @@ def ask_question(driver, question):
         response = "Could not extract response"
     return response
 
-def generate_word_report(results, output_filename):
+def generate_word_report(results_summary, detailed, output_filename):
     doc = Document()
     doc.add_heading(f"Sanity Check on DGCA Chatbot -- {datetime.now().strftime('%d/%m/%Y')}", 0)
     doc.add_paragraph(f"URL : {CHATBOT_URL}")
@@ -208,27 +195,23 @@ def generate_word_report(results, output_filename):
         row = table.rows[idx]
         row.cells[0].text = str(idx)
         row.cells[1].text = topic
-        if topic in results:
-            row.cells[2].text = results[topic]
-        else:
-            row.cells[2].text = "PASS (manual)"
+        row.cells[2].text = results_summary.get(topic, "PASS (manual)")
 
     doc.add_page_break()
 
-    # Detailed sections
     def add_section(title, qa_list):
         if not qa_list:
             return
         doc.add_heading(title, level=2)
-        for item in qa_list:
-            if isinstance(item, dict) and "scenario" in item:  # conversation
-                doc.add_paragraph(f"Scenario: {item['scenario']}")
-                for i, sub in enumerate(item['qa'], 1):
-                    doc.add_paragraph(f"{i}. {sub['question']}", style='List Number')
-                    doc.add_paragraph(f"Response: {sub['response']}")
-                    doc.add_paragraph(f"Status: {sub['status']}")
-                    doc.add_paragraph("")
-            else:
+        if isinstance(qa_list, dict) and "scenario" in qa_list:   # conversation
+            doc.add_paragraph(f"Scenario: {qa_list['scenario']}")
+            for i, sub in enumerate(qa_list['qa'], 1):
+                doc.add_paragraph(f"{i}. {sub['question']}", style='List Number')
+                doc.add_paragraph(f"Response: {sub['response']}")
+                doc.add_paragraph(f"Status: {sub['status']}")
+                doc.add_paragraph("")
+        else:
+            for item in qa_list:
                 q, a, s = item
                 doc.add_paragraph(f"Question: {q}", style='List Bullet')
                 doc.add_paragraph(f"Chatbot Response: {a}")
@@ -236,14 +219,14 @@ def generate_word_report(results, output_filename):
                 doc.add_paragraph("")
         doc.add_page_break()
 
-    add_section("Voice", results.get("Voice_qa", []))
-    add_section("Conversation Test", [results.get("Conversation_Detail", {})])
-    add_section("Suggested Question", results.get("Suggested_qa", []))
-    add_section("Political, Religious, Disruptive", results.get("Political_qa", []))
-    add_section("Complex Technical Question", results.get("Complex_qa", []))
-    add_section("Fees related Question", results.get("Fees_qa", []))
-    add_section("Passenger Related Question", results.get("Passenger_qa", []))
-    add_section("Bilingual Question", results.get("Bilingual_qa", []))
+    add_section("Voice", detailed.get("Voice_qa", []))
+    add_section("Conversation Test", detailed.get("Conversation_Detail", {}))
+    add_section("Suggested Question", detailed.get("Suggested_qa", []))
+    add_section("Political, Religious, Disruptive", detailed.get("Political_qa", []))
+    add_section("Complex Technical Question", detailed.get("Complex_qa", []))
+    add_section("Fees related Question", detailed.get("Fees_qa", []))
+    add_section("Passenger Related Question", detailed.get("Passenger_qa", []))
+    add_section("Bilingual Question", detailed.get("Bilingual_qa", []))
 
     doc.save(output_filename)
     print(f"Report saved: {output_filename}")
@@ -279,7 +262,7 @@ def main():
         reader = csv.DictReader(f)
         bank = list(reader)
 
-    # Randomly select questions for today
+    # Randomly select questions
     selected = {}
     for cat, count in SELECTION_COUNTS.items():
         if cat == "Conversation Test":
@@ -290,13 +273,19 @@ def main():
                 count = len(candidates)
             selected[cat] = random.sample(candidates, count)
 
-    # Setup browser
+    # Setup Chrome for GitHub Actions (Chromium)
     options = Options()
     options.add_argument("--headless=new")
-    options.add_argument("--window-size=1920,1080")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
-    driver = webdriver.Chrome(options=options)
+    options.add_argument("--disable-gpu")
+    options.add_argument("--window-size=1920,1080")
+    # Explicit Chromium binary location
+    options.binary_location = "/usr/bin/chromium-browser"
+
+    # Use Service with chromedriver path
+    service = Service("/usr/bin/chromedriver")
+    driver = webdriver.Chrome(service=service, options=options)
     driver.get(CHATBOT_URL)
     time.sleep(5)
 
@@ -399,7 +388,7 @@ def main():
     results_summary["Bilingual Question"] = "PASS" if all_pass else "FAIL"
     detailed["Bilingual_qa"] = bil_qa
 
-    # Add manual categories (always PASS)
+    # Manual categories
     results_summary["Disclaimer Popup"] = "PASS"
     results_summary["Feedback Submission"] = "PASS"
 
@@ -409,7 +398,7 @@ def main():
     report_name = f"Sanity_Check_{datetime.now().strftime('%d_%m_%Y')}.docx"
     generate_word_report(results_summary, detailed, report_name)
 
-    # Email report
+    # Email
     send_email([report_name], f"DGCA Sanity Report {datetime.now().strftime('%d/%m/%Y')}")
 
 if __name__ == "__main__":
