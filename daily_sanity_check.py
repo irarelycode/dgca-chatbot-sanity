@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Daily DGCA Chatbot Sanity Check – Randomized Questions + PASS/FAIL Report
-Uses the same robust chatbot interaction as the working local script.
+Reloads page before each question for reliability in headless mode.
 """
 
 import os
@@ -27,7 +27,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 from docx import Document
 
-# ========== CONFIGURATION (from environment or defaults) ==========
+# ========== CONFIGURATION (from environment) ==========
 CHATBOT_URL = os.getenv("CHATBOT_URL", "https://www.dgca.gov.in/digigov-portal/")
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
@@ -37,7 +37,6 @@ RECIPIENTS = os.getenv("RECIPIENTS", "").split(",") if os.getenv("RECIPIENTS") e
 
 QUESTIONS_BANK_FILE = "questions_bank.csv"
 
-# Number of questions to pick per category
 SELECTION_COUNTS = {
     "Voice": 3,
     "Conversation Test": 1,
@@ -49,7 +48,6 @@ SELECTION_COUNTS = {
     "Bilingual Question": 2,
 }
 
-# Predefined conversation scenarios
 CONVERSATION_SCENARIOS = [
     {
         "scenario": "Passenger grievance about misbehaviour",
@@ -111,7 +109,7 @@ def evaluate_response(category, question, response):
     else:
         return "PASS"
 
-# ========== ROBUST CHATBOT INTERACTION (from working local script) ==========
+# ========== ROBUST CHATBOT INTERACTION (with page reload) ==========
 
 def click_if_present(driver, locators, timeout=5):
     for by, value in locators:
@@ -146,9 +144,16 @@ def first_visible_element(driver, locators, timeout=30):
     raise TimeoutException("No matching element found.")
 
 def ask_question(driver, question, timeout=30):
-    """Send a question to the chatbot and return the response."""
-    # Click launcher if any
-    click_if_present(driver, [
+    """
+    Reload the page, open the chat widget, send the question,
+    and return the response.
+    """
+    # 1. Reload the page for a clean state
+    driver.get(CHATBOT_URL)
+    time.sleep(3)
+
+    # 2. Click the chat launcher (if any)
+    launcher_found = click_if_present(driver, [
         (By.ID, "chat-toggle"),
         (By.ID, "chatbot-toggle"),
         (By.CSS_SELECTOR, ".chat-toggle"),
@@ -156,9 +161,19 @@ def ask_question(driver, question, timeout=30):
         (By.CSS_SELECTOR, "[aria-label*='chat']"),
         (By.XPATH, "//button[contains(., 'Chat')]"),
         (By.XPATH, "//button[contains(., 'Ask')]"),
-    ], timeout=3)
+    ], timeout=5)
+    if not launcher_found:
+        # Some sites use a floating icon
+        try:
+            chat_icon = WebDriverWait(driver, 5).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, "img[alt='chat'], div[role='button']"))
+            )
+            driver.execute_script("arguments[0].click();", chat_icon)
+        except:
+            pass
+    time.sleep(2)
 
-    # Accept disclaimer / popups
+    # 3. Accept disclaimer / popups
     click_if_present(driver, [
         (By.XPATH, "//button[contains(text(), 'I understand')]"),
         (By.XPATH, "//button[contains(text(), 'Accept')]"),
@@ -166,7 +181,7 @@ def ask_question(driver, question, timeout=30):
         (By.XPATH, "//button[contains(text(), 'Got it')]"),
     ], timeout=5)
 
-    # Find input field
+    # 4. Find input field
     input_locators = [
         (By.CSS_SELECTOR, "input[placeholder*='message']"),
         (By.CSS_SELECTOR, "textarea[placeholder*='message']"),
@@ -178,7 +193,7 @@ def ask_question(driver, question, timeout=30):
     ]
     input_field = first_visible_element(driver, input_locators, timeout=timeout)
 
-    # Clear and type
+    # 5. Enter question
     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", input_field)
     time.sleep(0.5)
     try:
@@ -191,7 +206,7 @@ def ask_question(driver, question, timeout=30):
         driver.execute_script("arguments[0].value = '';", input_field)
     input_field.send_keys(question)
 
-    # Send message
+    # 6. Send message
     if not click_if_present(driver, [
         (By.CSS_SELECTOR, "button[type='submit']"),
         (By.XPATH, "//button[contains(., 'Send')]"),
@@ -200,9 +215,10 @@ def ask_question(driver, question, timeout=30):
     ], timeout=2):
         input_field.send_keys(Keys.ENTER)
 
-    time.sleep(12)  # Wait for response (adjust as needed)
+    # 7. Wait for response
+    time.sleep(12)   # Adjust if needed (can be reduced later)
 
-    # Extract response
+    # 8. Extract response
     response_locators = [
         (By.CSS_SELECTOR, ".bot-message"),
         (By.CSS_SELECTOR, ".latest-reply"),
@@ -219,10 +235,8 @@ def ask_question(driver, question, timeout=30):
     for by, value in response_locators:
         try:
             elems = driver.find_elements(by, value)
-            # Filter visible elements with text
             visible = [e for e in elems if e.is_displayed() and e.text.strip()]
             if visible:
-                # Take the most recent (last) one
                 response_text = visible[-1].text.strip()
                 if response_text:
                     break
@@ -230,6 +244,12 @@ def ask_question(driver, question, timeout=30):
             continue
     if not response_text:
         response_text = "Could not extract chatbot response."
+        # Save a screenshot for debugging
+        try:
+            driver.save_screenshot("debug_error.png")
+            print("   Debug screenshot saved as debug_error.png")
+        except:
+            pass
     return response_text
 
 # ========== WORD REPORT GENERATION ==========
@@ -240,7 +260,6 @@ def generate_sanity_report(results_summary, detailed, output_filename):
     doc.add_paragraph(f"URL : {CHATBOT_URL}")
     doc.add_paragraph("")
 
-    # Summary table
     doc.add_heading("Content", level=1)
     table = doc.add_table(rows=11, cols=3)
     table.style = 'Light Shading'
@@ -347,11 +366,6 @@ def main():
 
     service = Service("/usr/bin/chromedriver")
     driver = webdriver.Chrome(service=service, options=options)
-    driver.get(CHATBOT_URL)
-    time.sleep(5)
-
-    # Initial disclaimer (handled inside ask_question as well, but one extra)
-    click_if_present(driver, [(By.XPATH, "//button[contains(text(), 'I understand')]")], timeout=5)
 
     results_summary = {}
     detailed = {}
@@ -459,7 +473,7 @@ def main():
     results_summary["Bilingual Question"] = "PASS" if all_pass else "FAIL"
     detailed["Bilingual_qa"] = bil_qa
 
-    # Manual categories (we can mark as PASS)
+    # Manual categories
     results_summary["Disclaimer Popup"] = "PASS"
     results_summary["Feedback Submission"] = "PASS"
 
