@@ -104,15 +104,15 @@ def rule_based_evaluate(category, question, response):
 # ========== LLM EVALUATOR USING GITHUB MODELS ==========
 def llm_evaluate(category, question, response, expected_lang="en"):
     """
-    Use GitHub Models (free) to evaluate the chatbot response.
+    Use GitHub Models to evaluate the chatbot response.
     Returns a dict with 'verdict' and 'reason'.
     """
     if not GITHUB_TOKEN:
-        # Fallback to rule‑based
+        print("   GITHUB_TOKEN not found, using rule‑based.")
         verdict = rule_based_evaluate(category, question, response)
-        return {"verdict": verdict, "reason": "Rule‑based (LLM token missing)"}
+        return {"verdict": verdict, "reason": "Rule‑based (no token)"}
 
-    # Define expected behaviour per category
+    # Expected behaviour guidelines per category
     expected_map = {
         "Voice": "Response MUST be in Hindi (contains Devanagari script).",
         "Bilingual Question": "Response MUST be in Hindi.",
@@ -141,27 +141,33 @@ Answer in JSON format exactly like this:
 Do not output anything else.
 """
 
-    try:
-        # GitHub Models endpoint
-        client = OpenAI(
-            base_url="https://models.github.ai/inference/chat/completions",
-            api_key=GITHUB_TOKEN
-        )
-        completion = client.chat.completions.create(
-            model="openai/gpt-4o",   # You can also use "meta-llama/llama-3.3-70b-instruct"
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-            max_tokens=150,
-            response_format={"type": "json_object"}
-        )
-        result = json.loads(completion.choices[0].message.content)
-        if "verdict" not in result or "reason" not in result:
-            raise ValueError("Missing keys in LLM response")
-        return result
-    except Exception as e:
-        print(f"   LLM evaluation failed: {e}. Using rule‑based fallback.")
-        verdict = rule_based_evaluate(category, question, response)
-        return {"verdict": verdict, "reason": "Fallback due to LLM error"}
+    # Retry up to 2 times
+    for attempt in range(2):
+        try:
+            client = OpenAI(
+                base_url="https://models.github.ai/inference/chat/completions",
+                api_key=GITHUB_TOKEN,
+                timeout=30.0,
+            )
+            completion = client.chat.completions.create(
+                model="openai/gpt-4o",   # or "meta-llama/llama-3.3-70b-instruct"
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+                max_tokens=150,
+                response_format={"type": "json_object"}
+            )
+            result = json.loads(completion.choices[0].message.content)
+            if "verdict" not in result or "reason" not in result:
+                raise ValueError("Missing keys in LLM response")
+            return result
+        except Exception as e:
+            print(f"   LLM attempt {attempt+1} failed: {e}")
+            if attempt == 0:
+                time.sleep(2)
+            else:
+                print("   Using rule‑based fallback.")
+                verdict = rule_based_evaluate(category, question, response)
+                return {"verdict": verdict, "reason": "Rule‑based (LLM unavailable)"}
 
 # ========== CHATBOT INTERACTION (same as your working version) ==========
 def click_if_present(driver, locators, timeout=5):
