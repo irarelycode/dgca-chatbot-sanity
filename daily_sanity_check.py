@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Daily DGCA Chatbot Sanity Check – Randomized Questions
-Handles disclaimer popup, runs headless on GitHub Actions.
+Daily DGCA Chatbot Sanity Check – Randomized Questions + PASS/FAIL Report
+Uses the same robust chatbot interaction as the working local script.
 """
 
 import os
@@ -10,6 +10,7 @@ import re
 import random
 import csv
 import smtplib
+import traceback
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -23,10 +24,10 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, ElementNotInteractableException
+from selenium.common.exceptions import TimeoutException
 from docx import Document
 
-# ========== CONFIGURATION FROM ENVIRONMENT ==========
+# ========== CONFIGURATION (from environment or defaults) ==========
 CHATBOT_URL = os.getenv("CHATBOT_URL", "https://www.dgca.gov.in/digigov-portal/")
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
@@ -36,6 +37,7 @@ RECIPIENTS = os.getenv("RECIPIENTS", "").split(",") if os.getenv("RECIPIENTS") e
 
 QUESTIONS_BANK_FILE = "questions_bank.csv"
 
+# Number of questions to pick per category
 SELECTION_COUNTS = {
     "Voice": 3,
     "Conversation Test": 1,
@@ -47,6 +49,7 @@ SELECTION_COUNTS = {
     "Bilingual Question": 2,
 }
 
+# Predefined conversation scenarios
 CONVERSATION_SCENARIOS = [
     {
         "scenario": "Passenger grievance about misbehaviour",
@@ -69,7 +72,7 @@ CONVERSATION_SCENARIOS = [
     }
 ]
 
-# ========== HELPER FUNCTIONS ==========
+# ========== EVALUATION FUNCTIONS ==========
 
 def is_fallback(response):
     fallback_phrases = [
@@ -108,104 +111,130 @@ def evaluate_response(category, question, response):
     else:
         return "PASS"
 
-def accept_disclaimer(driver):
-    """Click the 'I understand' button on the disclaimer popup."""
-    try:
-        accept_btn = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'I understand')]"))
-        )
-        accept_btn.click()
-        print("   Disclaimer accepted.")
-        time.sleep(2)
-        return True
-    except TimeoutException:
-        print("   No disclaimer popup found (or already accepted).")
-        return False
+# ========== ROBUST CHATBOT INTERACTION (from working local script) ==========
 
-def ask_question(driver, question, max_attempts=2):
-    """Send a question to the chatbot and return the response."""
-    for attempt in range(max_attempts):
-        # 1. Ensure chat widget is open (optional: click on a chat icon if needed)
-        #    Many sites open the chatbot by default, so we skip this.
-
-        # 2. Wait for input field to be clickable
-        input_selectors = [
-            "input[placeholder*='message']",
-            "textarea[placeholder*='message']",
-            "input[placeholder*='Type']",
-            "textarea",
-            "input[type='text']"
-        ]
-        input_field = None
-        for selector in input_selectors:
+def click_if_present(driver, locators, timeout=5):
+    for by, value in locators:
+        try:
+            elem = WebDriverWait(driver, timeout).until(
+                EC.element_to_be_clickable((by, value))
+            )
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", elem)
+            time.sleep(0.5)
             try:
-                input_field = WebDriverWait(driver, 10).until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
-                )
-                if input_field:
-                    break
+                elem.click()
             except:
-                continue
-        if not input_field:
-            time.sleep(3)
+                driver.execute_script("arguments[0].click();", elem)
+            return True
+        except:
             continue
+    return False
 
-        # 3. Focus on the field
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", input_field)
-        time.sleep(0.5)
+def first_visible_element(driver, locators, timeout=30):
+    last_error = None
+    for by, value in locators:
         try:
-            input_field.click()
-        except:
-            driver.execute_script("arguments[0].click();", input_field)
-        time.sleep(0.5)
+            elem = WebDriverWait(driver, timeout).until(
+                EC.presence_of_element_located((by, value))
+            )
+            if elem and elem.is_displayed():
+                return elem
+        except Exception as e:
+            last_error = e
+    if last_error:
+        raise last_error
+    raise TimeoutException("No matching element found.")
 
-        # 4. Clear and type
+def ask_question(driver, question, timeout=30):
+    """Send a question to the chatbot and return the response."""
+    # Click launcher if any
+    click_if_present(driver, [
+        (By.ID, "chat-toggle"),
+        (By.ID, "chatbot-toggle"),
+        (By.CSS_SELECTOR, ".chat-toggle"),
+        (By.CSS_SELECTOR, ".chatbot-toggle"),
+        (By.CSS_SELECTOR, "[aria-label*='chat']"),
+        (By.XPATH, "//button[contains(., 'Chat')]"),
+        (By.XPATH, "//button[contains(., 'Ask')]"),
+    ], timeout=3)
+
+    # Accept disclaimer / popups
+    click_if_present(driver, [
+        (By.XPATH, "//button[contains(text(), 'I understand')]"),
+        (By.XPATH, "//button[contains(text(), 'Accept')]"),
+        (By.XPATH, "//button[contains(text(), 'Continue')]"),
+        (By.XPATH, "//button[contains(text(), 'Got it')]"),
+    ], timeout=5)
+
+    # Find input field
+    input_locators = [
+        (By.CSS_SELECTOR, "input[placeholder*='message']"),
+        (By.CSS_SELECTOR, "textarea[placeholder*='message']"),
+        (By.CSS_SELECTOR, "input[placeholder*='Type']"),
+        (By.CSS_SELECTOR, "textarea[placeholder*='Type']"),
+        (By.XPATH, "//*[@placeholder and (contains(translate(@placeholder,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'message') or contains(translate(@placeholder,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'type'))]"),
+        (By.XPATH, "//input[@type='text']"),
+        (By.XPATH, "//textarea"),
+    ]
+    input_field = first_visible_element(driver, input_locators, timeout=timeout)
+
+    # Clear and type
+    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", input_field)
+    time.sleep(0.5)
+    try:
+        input_field.click()
+    except:
+        driver.execute_script("arguments[0].click();", input_field)
+    try:
+        input_field.clear()
+    except:
+        driver.execute_script("arguments[0].value = '';", input_field)
+    input_field.send_keys(question)
+
+    # Send message
+    if not click_if_present(driver, [
+        (By.CSS_SELECTOR, "button[type='submit']"),
+        (By.XPATH, "//button[contains(., 'Send')]"),
+        (By.XPATH, "//button[contains(., 'Submit')]"),
+        (By.XPATH, "//button[contains(@aria-label, 'send')]"),
+    ], timeout=2):
+        input_field.send_keys(Keys.ENTER)
+
+    time.sleep(12)  # Wait for response (adjust as needed)
+
+    # Extract response
+    response_locators = [
+        (By.CSS_SELECTOR, ".bot-message"),
+        (By.CSS_SELECTOR, ".latest-reply"),
+        (By.CSS_SELECTOR, ".reply"),
+        (By.CSS_SELECTOR, ".message.bot"),
+        (By.CSS_SELECTOR, ".bubble"),
+        (By.CSS_SELECTOR, "[class*='bot']"),
+        (By.CSS_SELECTOR, "[class*='reply']"),
+        (By.CSS_SELECTOR, "[class*='answer']"),
+        (By.CSS_SELECTOR, "[id*='chat-widget'] p"),
+        (By.XPATH, "//*[contains(@class, 'bot-message') or contains(@class, 'bubble') or contains(@class, 'message') or contains(@class, 'reply') or contains(@class, 'answer')]"),
+    ]
+    response_text = ""
+    for by, value in response_locators:
         try:
-            input_field.clear()
-        except:
-            driver.execute_script("arguments[0].value = '';", input_field)
-        input_field.send_keys(question)
-        time.sleep(0.5)
-
-        # 5. Send message
-        sent = False
-        try:
-            send_btn = driver.find_element(By.XPATH, "//button[contains(., 'Send')]")
-            if send_btn.is_displayed() and send_btn.is_enabled():
-                driver.execute_script("arguments[0].click();", send_btn)
-                sent = True
-        except:
-            pass
-        if not sent:
-            input_field.send_keys(Keys.ENTER)
-
-        # 6. Wait for response (adjust time as needed)
-        time.sleep(12)
-
-        # 7. Extract latest response
-        response_selectors = [
-            ".bot-message", ".latest-reply", ".reply", ".message.bot", ".bubble",
-            "[class*='bot']", "[class*='reply']", "[class*='answer']"
-        ]
-        response = ""
-        for selector in response_selectors:
-            elements = driver.find_elements(By.CSS_SELECTOR, selector)
-            if elements:
-                for elem in reversed(elements):
-                    txt = elem.text.strip()
-                    if txt:
-                        response = txt
-                        break
-                if response:
+            elems = driver.find_elements(by, value)
+            # Filter visible elements with text
+            visible = [e for e in elems if e.is_displayed() and e.text.strip()]
+            if visible:
+                # Take the most recent (last) one
+                response_text = visible[-1].text.strip()
+                if response_text:
                     break
-        if response:
-            return response
-        else:
-            print(f"   No response on attempt {attempt+1}, retrying...")
-            time.sleep(3)
-    return "Could not extract response after multiple attempts"
+        except:
+            continue
+    if not response_text:
+        response_text = "Could not extract chatbot response."
+    return response_text
 
-def generate_word_report(results_summary, detailed, output_filename):
+# ========== WORD REPORT GENERATION ==========
+
+def generate_sanity_report(results_summary, detailed, output_filename):
     doc = Document()
     doc.add_heading(f"Sanity Check on DGCA Chatbot -- {datetime.now().strftime('%d/%m/%Y')}", 0)
     doc.add_paragraph(f"URL : {CHATBOT_URL}")
@@ -238,7 +267,7 @@ def generate_word_report(results_summary, detailed, output_filename):
         if not qa_list:
             return
         doc.add_heading(title, level=2)
-        if isinstance(qa_list, dict) and "scenario" in qa_list:   # conversation
+        if isinstance(qa_list, dict) and "scenario" in qa_list:
             doc.add_paragraph(f"Scenario: {qa_list['scenario']}")
             for i, sub in enumerate(qa_list['qa'], 1):
                 doc.add_paragraph(f"{i}. {sub['question']}", style='List Number')
@@ -246,8 +275,7 @@ def generate_word_report(results_summary, detailed, output_filename):
                 doc.add_paragraph(f"Status: {sub['status']}")
                 doc.add_paragraph("")
         else:
-            for item in qa_list:
-                q, a, s = item
+            for q, a, s in qa_list:
                 doc.add_paragraph(f"Question: {q}", style='List Bullet')
                 doc.add_paragraph(f"Chatbot Response: {a}")
                 doc.add_paragraph(f"Status: {s}")
@@ -297,7 +325,7 @@ def main():
         reader = csv.DictReader(f)
         bank = list(reader)
 
-    # Randomly select questions
+    # Randomly select questions for today
     selected = {}
     for cat, count in SELECTION_COUNTS.items():
         if cat == "Conversation Test":
@@ -308,7 +336,7 @@ def main():
                 count = len(candidates)
             selected[cat] = random.sample(candidates, count)
 
-    # Setup Chrome for GitHub Actions
+    # Setup Chrome for GitHub Actions (Chromium)
     options = Options()
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
@@ -322,19 +350,8 @@ def main():
     driver.get(CHATBOT_URL)
     time.sleep(5)
 
-    # Accept disclaimer popup
-    accept_disclaimer(driver)
-
-    # Additional: ensure any language selection is accepted (if "English" button)
-    try:
-        eng_btn = WebDriverWait(driver, 5).until(
-            EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'ENGLISH')]"))
-        )
-        eng_btn.click()
-        print("   English language selected.")
-        time.sleep(2)
-    except:
-        pass
+    # Initial disclaimer (handled inside ask_question as well, but one extra)
+    click_if_present(driver, [(By.XPATH, "//button[contains(text(), 'I understand')]")], timeout=5)
 
     results_summary = {}
     detailed = {}
@@ -442,7 +459,7 @@ def main():
     results_summary["Bilingual Question"] = "PASS" if all_pass else "FAIL"
     detailed["Bilingual_qa"] = bil_qa
 
-    # Manual categories (simulated pass)
+    # Manual categories (we can mark as PASS)
     results_summary["Disclaimer Popup"] = "PASS"
     results_summary["Feedback Submission"] = "PASS"
 
@@ -450,7 +467,7 @@ def main():
 
     # Generate report
     report_name = f"Sanity_Check_{datetime.now().strftime('%d_%m_%Y')}.docx"
-    generate_word_report(results_summary, detailed, report_name)
+    generate_sanity_report(results_summary, detailed, report_name)
 
     # Email
     send_email([report_name], f"DGCA Sanity Report {datetime.now().strftime('%d/%m/%Y')}")
