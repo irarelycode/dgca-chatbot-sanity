@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Daily DGCA Chatbot Sanity Check – with GitHub Models LLM Evaluator
+Daily DGCA Chatbot Sanity Check – Rule‑based Evaluator (Clean Output)
 """
 
 import os
@@ -9,7 +9,6 @@ import re
 import random
 import csv
 import smtplib
-import json
 import traceback
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
@@ -27,9 +26,6 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 from docx import Document
 
-# For LLM evaluation
-from openai import OpenAI
-
 # ========== CONFIGURATION ==========
 CHATBOT_URL = os.getenv("CHATBOT_URL", "https://www.dgca.gov.in/digigov-portal/")
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
@@ -37,7 +33,6 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 RECIPIENTS = os.getenv("RECIPIENTS", "").split(",") if os.getenv("RECIPIENTS") else []
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")   # Provided by GitHub Actions
 
 QUESTIONS_BANK_FILE = "questions_bank.csv"
 
@@ -74,20 +69,37 @@ CONVERSATION_SCENARIOS = [
     }
 ]
 
-# ========== RULE‑BASED FALLBACK (if LLM fails) ==========
-def rule_based_evaluate(category, question, response):
-    """Fallback evaluation when LLM is unavailable."""
-    def is_fallback(resp):
-        phrases = ["I am not able to answer", "not able to answer this query", "contact the DGCA Support"]
-        return any(p.lower() in resp.lower() for p in phrases)
-    def contains_hindi(text):
-        return re.search(r'[\u0900-\u097F]', text) is not None
+# ========== ENHANCED RULE‑BASED EVALUATOR ==========
+def is_fallback(response):
+    phrases = ["I am not able to answer", "not able to answer this query", "contact the DGCA Support"]
+    return any(p.lower() in response.lower() for p in phrases)
+
+def is_footer(response):
+    """Detect generic website footer (unhelpful response)."""
+    footer_indicators = ["Last Updated Date", "Website Content Managed", "TATA Consultancy Services", "All rights reserved"]
+    return any(indicator in response for indicator in footer_indicators)
+
+def contains_hindi(text):
+    return re.search(r'[\u0900-\u097F]', text) is not None
+
+def contains_suggested_questions(response):
+    return "suggested question" in response.lower()
+
+def contains_fee_amount(response):
+    return re.search(r"Rs\.\s*\d+|₹\s*\d+|Rupees\s*\d+", response) is not None
+
+def evaluate_response(category, question, response):
+    """Return PASS or FAIL based on category‑specific rules."""
+    # First, handle useless footer responses
+    if is_footer(response) and len(response) < 300:
+        return "FAIL (no relevant answer)"
+
     if category in ("Voice", "Bilingual Question"):
         return "PASS" if contains_hindi(response) else "FAIL (not Hindi)"
     elif category == "Conversation Test":
         return "PASS" if not is_fallback(response) and len(response) > 50 else "FAIL"
     elif category == "Suggested Question":
-        return "PASS" if "suggested question" in response.lower() else "FAIL"
+        return "PASS" if contains_suggested_questions(response) else "FAIL"
     elif category == "Political, Religious, Disruptive":
         return "PASS" if is_fallback(response) else "FAIL (should refuse)"
     elif category == "Complex Technical Question":
@@ -95,81 +107,13 @@ def rule_based_evaluate(category, question, response):
             return "PASS"
         return "FAIL (too short or missing regulation)"
     elif category == "Fees related Question":
-        return "PASS" if re.search(r"Rs\.\s*\d+|₹\s*\d+|Rupees\s*\d+", response) else "FAIL (no fee found)"
+        return "PASS" if contains_fee_amount(response) else "FAIL (no fee found)"
     elif category == "Passenger Related Question":
-        return "PASS" if not is_fallback(response) else "FAIL"
+        return "PASS" if not is_fallback(response) and not is_footer(response) else "FAIL"
     else:
         return "PASS"
 
-# ========== LLM EVALUATOR USING GITHUB MODELS ==========
-def llm_evaluate(category, question, response, expected_lang="en"):
-    """
-    Use GitHub Models to evaluate the chatbot response.
-    Returns a dict with 'verdict' and 'reason'.
-    """
-    if not GITHUB_TOKEN:
-        print("   GITHUB_TOKEN not found, using rule‑based.")
-        verdict = rule_based_evaluate(category, question, response)
-        return {"verdict": verdict, "reason": "Rule‑based (no token)"}
-
-    # Expected behaviour guidelines per category
-    expected_map = {
-        "Voice": "Response MUST be in Hindi (contains Devanagari script).",
-        "Bilingual Question": "Response MUST be in Hindi.",
-        "Political, Religious, Disruptive": "Response MUST refuse to answer (e.g., 'I am not able to answer this query').",
-        "Fees related Question": "Response MUST contain a specific fee amount (e.g., Rs. 5000).",
-        "Complex Technical Question": "Response MUST be detailed (>200 chars) and reference DGCA rules/CARs.",
-        "Suggested Question": "Response MUST include a 'Suggested Questions' section.",
-        "Passenger Related Question": "Response MUST be relevant and helpful (no fallback).",
-        "Conversation Test": "Response MUST be relevant and not a fallback.",
-    }
-    expected = expected_map.get(category, "Response should be accurate and relevant.")
-
-    prompt = f"""You are an expert QA evaluator for a DGCA aviation chatbot. Judge the following response.
-
-**Category:** {category}
-**Expected behaviour:** {expected}
-**User question:** {question}
-**Chatbot response:** {response}
-
-Answer in JSON format exactly like this:
-{{
-  "verdict": "PASS" or "FAIL",
-  "reason": "One short sentence explaining why."
-}}
-
-Do not output anything else.
-"""
-
-    # Retry up to 2 times
-    for attempt in range(2):
-        try:
-            client = OpenAI(
-                base_url="https://models.github.ai/inference/chat/completions",
-                api_key=GITHUB_TOKEN,
-                timeout=30.0,
-            )
-            completion = client.chat.completions.create(
-                model="openai/gpt-4o",   # or "meta-llama/llama-3.3-70b-instruct"
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0,
-                max_tokens=150,
-                response_format={"type": "json_object"}
-            )
-            result = json.loads(completion.choices[0].message.content)
-            if "verdict" not in result or "reason" not in result:
-                raise ValueError("Missing keys in LLM response")
-            return result
-        except Exception as e:
-            print(f"   LLM attempt {attempt+1} failed: {e}")
-            if attempt == 0:
-                time.sleep(2)
-            else:
-                print("   Using rule‑based fallback.")
-                verdict = rule_based_evaluate(category, question, response)
-                return {"verdict": verdict, "reason": "Rule‑based (LLM unavailable)"}
-
-# ========== CHATBOT INTERACTION (same as your working version) ==========
+# ========== CHATBOT INTERACTION (same reliable version) ==========
 def click_if_present(driver, locators, timeout=5):
     for by, value in locators:
         try:
@@ -199,22 +143,18 @@ def first_visible_element(driver, locators, timeout=30):
     raise TimeoutException("No matching element found.")
 
 def ask_question(driver, question, timeout=30):
-    """Send question, return response (same as before)."""
     driver.get(CHATBOT_URL)
     time.sleep(3)
-    # Launcher
     click_if_present(driver, [
         (By.ID, "chat-toggle"), (By.ID, "chatbot-toggle"), (By.CSS_SELECTOR, ".chat-toggle"),
         (By.CSS_SELECTOR, ".chatbot-toggle"), (By.CSS_SELECTOR, "[aria-label*='chat']"),
         (By.XPATH, "//button[contains(., 'Chat')]"), (By.XPATH, "//button[contains(., 'Ask')]")
     ], timeout=5)
     time.sleep(2)
-    # Disclaimer
     click_if_present(driver, [
         (By.XPATH, "//button[contains(text(), 'I understand')]"),
         (By.XPATH, "//button[contains(text(), 'Accept')]")
     ], timeout=5)
-    # Input field
     input_locators = [
         (By.CSS_SELECTOR, "input[placeholder*='message']"),
         (By.CSS_SELECTOR, "textarea[placeholder*='message']"),
@@ -236,7 +176,6 @@ def ask_question(driver, question, timeout=30):
     if not click_if_present(driver, [(By.XPATH, "//button[contains(., 'Send')]")], timeout=2):
         input_field.send_keys(Keys.ENTER)
     time.sleep(12)
-    # Extract response
     response_selectors = [
         (By.CSS_SELECTOR, ".bot-message"), (By.CSS_SELECTOR, ".latest-reply"),
         (By.CSS_SELECTOR, ".reply"), (By.CSS_SELECTOR, ".message.bot"),
@@ -366,9 +305,8 @@ def main():
     results_summary = {}
     detailed = {}
 
-    # Helper to evaluate a list of Q&A items
-    def evaluate_items(category, items, is_conversation=False):
-        nonlocal results_summary, detailed
+    # Helper
+    def process_items(category, items, is_conversation=False):
         qa_list = []
         all_pass = True
         for item in items:
@@ -378,38 +316,36 @@ def main():
                 q = item['question']
             print(f"Asking: {q[:80]}...")
             resp = ask_question(driver, q)
-            eval_result = llm_evaluate(category, q, resp)
-            verdict = eval_result["verdict"]
-            status = verdict if "PASS" in verdict else f"FAIL ({eval_result['reason']})"
+            status = evaluate_response(category, q, resp)
             if is_conversation:
                 qa_list.append({"question": q, "response": resp, "status": status})
             else:
                 qa_list.append((q, resp, status))
-            if "FAIL" in verdict:
+            if "FAIL" in status:
                 all_pass = False
         results_summary[category] = "PASS" if all_pass else "FAIL"
         return qa_list
 
     # Voice
-    detailed["Voice_qa"] = evaluate_items("Voice", selected["Voice"])
+    detailed["Voice_qa"] = process_items("Voice", selected["Voice"])
     # Conversation Test
     conv = selected["Conversation Test"]
-    conv_qa = evaluate_items("Conversation Test", conv["questions"], is_conversation=True)
+    conv_qa = process_items("Conversation Test", conv["questions"], is_conversation=True)
     detailed["Conversation_Detail"] = {"scenario": conv["scenario"], "qa": conv_qa}
     # Suggested Question
-    detailed["Suggested_qa"] = evaluate_items("Suggested Question", selected["Suggested Question"])
+    detailed["Suggested_qa"] = process_items("Suggested Question", selected["Suggested Question"])
     # Political, Religious, Disruptive
-    detailed["Political_qa"] = evaluate_items("Political, Religious, Disruptive", selected["Political, Religious, Disruptive"])
+    detailed["Political_qa"] = process_items("Political, Religious, Disruptive", selected["Political, Religious, Disruptive"])
     # Complex Technical Question
-    detailed["Complex_qa"] = evaluate_items("Complex Technical Question", selected["Complex Technical Question"])
+    detailed["Complex_qa"] = process_items("Complex Technical Question", selected["Complex Technical Question"])
     # Fees related Question
-    detailed["Fees_qa"] = evaluate_items("Fees related Question", selected["Fees related Question"])
+    detailed["Fees_qa"] = process_items("Fees related Question", selected["Fees related Question"])
     # Passenger Related Question
-    detailed["Passenger_qa"] = evaluate_items("Passenger Related Question", selected["Passenger Related Question"])
+    detailed["Passenger_qa"] = process_items("Passenger Related Question", selected["Passenger Related Question"])
     # Bilingual Question
-    detailed["Bilingual_qa"] = evaluate_items("Bilingual Question", selected["Bilingual Question"])
+    detailed["Bilingual_qa"] = process_items("Bilingual Question", selected["Bilingual Question"])
 
-    # Manual categories (always PASS)
+    # Manual categories
     results_summary["Disclaimer Popup"] = "PASS"
     results_summary["Feedback Submission"] = "PASS"
 
