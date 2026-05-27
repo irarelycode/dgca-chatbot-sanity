@@ -69,12 +69,12 @@ def call_llm(prompt, max_tokens=500, temperature=0.7):
     if not GITHUB_TOKEN:
         raise Exception("GITHUB_TOKEN not set")
     client = OpenAI(
-        base_url="https://models.github.ai/inference/chat/completions",
+        base_url="https://models.github.ai/inference/",   # <-- fixed base URL
         api_key=GITHUB_TOKEN,
         timeout=30,
     )
     completion = client.chat.completions.create(
-        model="openai/gpt-4o",   # or "meta-llama/llama-3.3-70b-instruct"
+        model="gpt-4o",   # or "meta-llama/Llama-3.3-70B-Instruct"
         messages=[{"role": "user", "content": prompt}],
         temperature=temperature,
         max_tokens=max_tokens,
