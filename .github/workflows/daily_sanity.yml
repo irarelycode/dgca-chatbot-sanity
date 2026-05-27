@@ -8,6 +8,9 @@ on:
 jobs:
   sanity-test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      models: read                     # <-- Required for GitHub Models
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -18,14 +21,12 @@ jobs:
           python-version: '3.10'
 
       - name: Install dependencies
-        run: pip install selenium python-docx langdetect
+        run: pip install selenium python-docx langdetect openai
 
       - name: Install Chromium and Chromedriver
         run: |
           sudo apt-get update
           sudo apt-get install -y chromium-browser chromium-chromedriver
-          echo "CHROME_PATH=/usr/bin/chromium-browser" >> $GITHUB_ENV
-          echo "CHROMEDRIVER_PATH=/usr/bin/chromedriver" >> $GITHUB_ENV
 
       - name: Run sanity check
         env:
@@ -33,6 +34,7 @@ jobs:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           RECIPIENTS: ${{ secrets.RECIPIENTS }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # Automatically injected
         run: python daily_sanity_check.py
 
       - name: Upload report
@@ -40,10 +42,3 @@ jobs:
         with:
           name: sanity-report
           path: Sanity_Check_*.docx
-
-      - name: Upload debug screenshot (if any)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: debug-screenshots
-          path: debug_error.png
