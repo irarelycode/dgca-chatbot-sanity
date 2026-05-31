@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """
-DGCA Complete Automation – Daily Dashboard PDF + Chatbot Sanity Check
-- Works in GitHub Actions (headless) and locally (config.ini)
-- Dashboard export: proven working logic from local script
-- Chatbot test: LLM generation + fallback to static bank + rule evaluation
+DGCA Complete Automation – Dashboard PDF + Chatbot Sanity
+Works on GitHub Actions and locally.
 """
 
 import os
@@ -57,7 +55,7 @@ if not RECIPIENTS and "EMAIL_RECIPIENTS" in config:
 CHATBOT_URL = os.getenv("CHATBOT_URL", config.get("CHATBOT", "URL", fallback="https://www.dgca.gov.in/digigov-portal/"))
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 
-# Superset config (internal, not in config.ini)
+# Superset config
 SUPERSET_BASE_URL = "http://20.244.27.216:8088"
 SUPERSET_HOME_URL = f"{SUPERSET_BASE_URL}/superset/welcome/"
 DASHBOARD_NAME = "DGCA Chatbot Dashboard"
@@ -69,15 +67,11 @@ OUTPUT_DIR = os.path.abspath("./reports")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # ==========================================================
-# HELPER FUNCTIONS (shared)
+# HELPER FUNCTIONS
 # ==========================================================
 def create_driver():
-    """Create Chrome driver – headless if HEADLESS env var is true or config says so."""
     options = Options()
-    # Determine headless mode: environment variable HEADLESS (true/false) or config
-    headless = os.getenv("HEADLESS", "false").lower() == "true"
-    if not headless and "BROWSER" in config:
-        headless = config.getboolean("BROWSER", "HEADLESS", fallback=False)
+    headless = os.getenv("HEADLESS", "true").lower() == "true"
     if headless:
         options.add_argument("--headless=new")
     else:
@@ -90,14 +84,14 @@ def create_driver():
     options.add_argument("--disable-infobars")
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    # For GitHub Actions, set Chromium binary location
+    
+    # Set binary location if running on GitHub Actions (Chromium)
     if os.path.exists("/usr/bin/chromium-browser"):
         options.binary_location = "/usr/bin/chromium-browser"
-        from selenium.webdriver.chrome.service import Service
-        service = Service("/usr/bin/chromedriver")
-        driver = webdriver.Chrome(service=service, options=options)
-    else:
-        driver = webdriver.Chrome(options=options)
+    elif os.path.exists("/usr/bin/chromium"):
+        options.binary_location = "/usr/bin/chromium"
+    
+    driver = webdriver.Chrome(options=options)
     driver.set_page_load_timeout(120)
     try:
         driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
@@ -150,7 +144,7 @@ def send_email(attachments, subject="DGCA Automation Report"):
         print(f"   - {recipient}")
 
 # ==========================================================
-# SUPERSET DASHBOARD PDF (exact working logic from local script)
+# SUPERSET DASHBOARD PDF (exact working logic)
 # ==========================================================
 def login_superset(driver):
     print("\n1. Opening Superset...")
@@ -431,10 +425,7 @@ def load_static_bank():
     return bank
 
 def ask_chatbot_question(driver, question):
-    """Reuse the same logic as the local script but simplified for one question."""
-    # This function is essentially the same as the one in the dashboard script.
-    # We'll reuse the existing logic from the local script's run_chatbot_tests but isolated.
-    # For simplicity, we copy the robust interaction from previous versions.
+    """Send a single question to the chatbot and return the response."""
     driver.get(CHATBOT_URL)
     time.sleep(3)
     # Accept disclaimer
