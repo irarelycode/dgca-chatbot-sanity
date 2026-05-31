@@ -67,7 +67,7 @@ OUTPUT_DIR = os.path.abspath("./reports")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # ==========================================================
-# HELPER FUNCTIONS
+# HELPER FUNCTIONS (shared)
 # ==========================================================
 def create_driver():
     options = Options()
@@ -109,6 +109,34 @@ def safe_click(driver, element):
         element.click()
     except Exception:
         driver.execute_script("arguments[0].click();", element)
+
+def click_if_present(driver, locators, timeout=5):
+    for by, value in locators:
+        try:
+            elem = WebDriverWait(driver, timeout).until(EC.element_to_be_clickable((by, value)))
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", elem)
+            time.sleep(0.5)
+            try:
+                elem.click()
+            except:
+                driver.execute_script("arguments[0].click();", elem)
+            return True
+        except:
+            continue
+    return False
+
+def first_visible_element(driver, locators, timeout=30):
+    last_error = None
+    for by, value in locators:
+        try:
+            elem = WebDriverWait(driver, timeout).until(EC.presence_of_element_located((by, value)))
+            if elem and elem.is_displayed():
+                return elem
+        except Exception as e:
+            last_error = e
+    if last_error:
+        raise last_error
+    raise TimeoutException("No matching element found.")
 
 def save_error_screenshot(driver, filename="error.png"):
     path = os.path.join(OUTPUT_DIR, filename)
@@ -353,7 +381,8 @@ def call_llm(prompt, max_tokens=500, temperature=0.7):
     if not GITHUB_TOKEN or not LLM_AVAILABLE:
         raise Exception("LLM not available")
     client = OpenAI(base_url="https://models.github.ai/inference/", api_key=GITHUB_TOKEN, timeout=30)
-    models_to_try = ["gpt-4o", "meta-llama/Llama-3.3-70B-Instruct"]
+    # Only use models that are confirmed to work
+    models_to_try = ["gpt-4o"]
     last_error = None
     for model in models_to_try:
         try:
@@ -428,14 +457,35 @@ def ask_chatbot_question(driver, question):
     """Send a single question to the chatbot and return the response."""
     driver.get(CHATBOT_URL)
     time.sleep(3)
-    # Accept disclaimer
-    try:
-        accept_btn = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'I understand')]")))
-        accept_btn.click()
-        time.sleep(1)
-    except:
-        pass
-    # Find input field
+    
+    # 1. Click any chat launcher
+    launcher_found = click_if_present(driver, [
+        (By.ID, "chat-toggle"),
+        (By.ID, "chatbot-toggle"),
+        (By.CSS_SELECTOR, ".chat-toggle"),
+        (By.CSS_SELECTOR, ".chatbot-toggle"),
+        (By.CSS_SELECTOR, "[aria-label*='chat']"),
+        (By.XPATH, "//button[contains(., 'Chat')]"),
+        (By.XPATH, "//button[contains(., 'Ask')]"),
+    ], timeout=5)
+    if not launcher_found:
+        # Try a generic floating icon
+        try:
+            chat_icon = driver.find_element(By.CSS_SELECTOR, "img[alt*='chat'], div[role='button'][aria-label*='chat']")
+            driver.execute_script("arguments[0].click();", chat_icon)
+        except:
+            pass
+    time.sleep(2)
+    
+    # 2. Accept disclaimer
+    click_if_present(driver, [
+        (By.XPATH, "//button[contains(text(), 'I understand')]"),
+        (By.XPATH, "//button[contains(text(), 'Accept')]"),
+        (By.XPATH, "//button[contains(text(), 'Continue')]"),
+        (By.XPATH, "//button[contains(text(), 'Got it')]"),
+    ], timeout=5)
+    
+    # 3. Find input field
     input_locators = [
         (By.CSS_SELECTOR, "input[placeholder*='message']"),
         (By.CSS_SELECTOR, "textarea[placeholder*='message']"),
@@ -443,31 +493,44 @@ def ask_chatbot_question(driver, question):
         (By.CSS_SELECTOR, "textarea"),
         (By.XPATH, "//input[@type='text']")
     ]
-    input_field = None
-    for by, val in input_locators:
-        try:
-            input_field = WebDriverWait(driver, 10).until(EC.presence_of_element_located((by, val)))
-            if input_field.is_displayed():
-                break
-        except:
-            continue
-    if not input_field:
-        return "Could not find input field"
-    input_field.click()
-    input_field.clear()
-    input_field.send_keys(question)
+    input_field = first_visible_element(driver, input_locators, timeout=15)
+    
+    # 4. Scroll into view and click using JS if needed
+    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", input_field)
     time.sleep(0.5)
     try:
-        send_btn = driver.find_element(By.XPATH, "//button[contains(., 'Send')]")
-        send_btn.click()
+        input_field.click()
     except:
+        driver.execute_script("arguments[0].click();", input_field)
+    
+    # 5. Clear and type
+    try:
+        input_field.clear()
+    except:
+        driver.execute_script("arguments[0].value = '';", input_field)
+    input_field.send_keys(question)
+    time.sleep(0.5)
+    
+    # 6. Send
+    if not click_if_present(driver, [
+        (By.XPATH, "//button[contains(., 'Send')]"),
+        (By.XPATH, "//button[contains(., 'Submit')]"),
+        (By.XPATH, "//button[contains(@aria-label, 'send')]"),
+    ], timeout=2):
         input_field.send_keys(Keys.ENTER)
-    time.sleep(12)
-    # Extract response
+    
+    time.sleep(12)  # Wait for response
+    
+    # 7. Extract response
     response_selectors = [
-        (By.CSS_SELECTOR, ".bot-message"), (By.CSS_SELECTOR, ".latest-reply"),
-        (By.CSS_SELECTOR, ".reply"), (By.CSS_SELECTOR, ".message.bot"),
-        (By.CSS_SELECTOR, ".bubble")
+        (By.CSS_SELECTOR, ".bot-message"),
+        (By.CSS_SELECTOR, ".latest-reply"),
+        (By.CSS_SELECTOR, ".reply"),
+        (By.CSS_SELECTOR, ".message.bot"),
+        (By.CSS_SELECTOR, ".bubble"),
+        (By.CSS_SELECTOR, "[class*='bot']"),
+        (By.CSS_SELECTOR, "[class*='answer']"),
+        (By.XPATH, "//div[contains(@class, 'bot')]//p")
     ]
     for by, val in response_selectors:
         elems = driver.find_elements(by, val)
