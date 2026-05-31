@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 DGCA Complete Automation – Dashboard PDF + Chatbot Sanity
-Uses Groq LLM (free) for fresh questions. Falls back to large static bank.
+Uses Groq LLM (free) for fresh questions. Falls back to large static bank only if Groq fails.
 """
 
 import os
@@ -28,7 +28,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 from docx import Document
 
-# LLM imports – Groq
+# LLM import – Groq uses OpenAI library
 try:
     from openai import OpenAI
     LLM_AVAILABLE = True
@@ -51,8 +51,6 @@ if not RECIPIENTS and "EMAIL_RECIPIENTS" in config:
     RECIPIENTS = [value.strip() for key, value in config["EMAIL_RECIPIENTS"].items() if key.startswith("recipient_")]
 
 CHATBOT_URL = os.getenv("CHATBOT_URL", config.get("CHATBOT", "URL", fallback="https://www.dgca.gov.in/digigov-portal/"))
-
-# Groq API key (from GitHub secret)
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
 # Superset config
@@ -168,7 +166,7 @@ def send_email(attachments, subject="DGCA Automation Report"):
     print("   Email sent successfully.")
 
 # ==========================================================
-# SUPERSET DASHBOARD (same as before – proven to work)
+# SUPERSET DASHBOARD PDF (same as before)
 # ==========================================================
 def login_superset(driver):
     print("\n1. Opening Superset...")
@@ -248,20 +246,24 @@ def wait_for_charts(driver, timeout=300, min_charts=20):
 
 def export_dashboard_pdf(driver):
     print("\n6. Exporting dashboard PDF...")
-    driver.execute_script("""
-        window.scrollTo(0, 0);
-        window.dispatchEvent(new Event('resize'));
-        document.body.style.zoom = '100%';
-    """)
-    time.sleep(15)
+    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+    time.sleep(3)
+    driver.execute_script("window.scrollTo(0, 0);")
+    time.sleep(2)
     try:
-        total_width = driver.execute_script("return Math.max(document.body.scrollWidth, document.documentElement.scrollWidth);")
-        total_height = driver.execute_script("return Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);")
-        print(f"   Page size detected: {total_width} x {total_height}")
-        driver.set_window_size(max(total_width, 1600), max(total_height, 1200))
-        time.sleep(5)
+        WebDriverWait(driver, 60).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, ".dashboard-component-chart-holder canvas, .dashboard-component-chart-holder svg"))
+        )
+        print("   Charts detected.")
     except:
-        pass
+        print("   No charts detected – continuing anyway.")
+    driver.execute_script("window.dispatchEvent(new Event('resize'));")
+    time.sleep(2)
+    total_width = driver.execute_script("return Math.max(document.body.scrollWidth, document.documentElement.scrollWidth);")
+    total_height = driver.execute_script("return Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);")
+    print(f"   Page size detected: {total_width} x {total_height}")
+    driver.set_window_size(max(total_width, 1600), max(total_height, 1200))
+    time.sleep(3)
     pdf_options = {
         "landscape": True,
         "displayHeaderFooter": False,
@@ -269,26 +271,32 @@ def export_dashboard_pdf(driver):
         "preferCSSPageSize": False,
         "paperWidth": 16.5,
         "paperHeight": 11.7,
-        "marginTop": 0.15,
-        "marginBottom": 0.15,
-        "marginLeft": 0.15,
-        "marginRight": 0.15,
-        "scale": 1.0,
+        "marginTop": 0.2,
+        "marginBottom": 0.2,
+        "marginLeft": 0.2,
+        "marginRight": 0.2,
+        "scale": 0.8,
         "transferMode": "ReturnAsBase64"
     }
-    result = driver.execute_cdp_cmd("Page.printToPDF", pdf_options)
-    pdf_bytes = base64.b64decode(result["data"])
-    pdf_path = os.path.join(OUTPUT_DIR, f"DGCA_Dashboard_{int(time.time())}.pdf")
-    with open(pdf_path, "wb") as f:
-        f.write(pdf_bytes)
-    print(f"   PDF saved: {pdf_path}")
-    return pdf_path
+    try:
+        result = driver.execute_cdp_cmd("Page.printToPDF", pdf_options)
+        pdf_bytes = base64.b64decode(result["data"])
+        pdf_path = os.path.join(OUTPUT_DIR, f"DGCA_Dashboard_{int(time.time())}.pdf")
+        with open(pdf_path, "wb") as f:
+            f.write(pdf_bytes)
+        print(f"   PDF saved: {pdf_path}")
+        return pdf_path
+    except Exception as e:
+        print(f"   CDP PDF generation failed: {e}. Saving screenshot as fallback.")
+        screenshot_path = os.path.join(OUTPUT_DIR, f"DGCA_Dashboard_{int(time.time())}.png")
+        driver.save_screenshot(screenshot_path)
+        return screenshot_path
 
 # ==========================================================
-# CHATBOT SANITY – WITH GROQ LLM + LARGE STATIC BANK
+# CHATBOT SANITY – WITH GROQ LLM + LARGE STATIC BANK FALLBACK
 # ==========================================================
 
-# Expanded static bank (50+ questions) – ensures random daily selection
+# Large static bank (used only if Groq fails)
 LARGE_STATIC_BANK = {
     "Voice": [
         "मैं अपना कमर्शियल पायलट लाइसेंस कैसे प्राप्त करूं",
@@ -428,22 +436,39 @@ def rule_evaluate(category, question, response):
     else:
         return "PASS"
 
-# LLM helpers using Groq
+# LLM helpers using Groq (robust)
 def call_groq(prompt, max_tokens=500, temperature=0.7):
+    """Call Groq API with fallback models."""
     if not GROQ_API_KEY:
         raise Exception("GROQ_API_KEY not set")
-    client = OpenAI(
-        base_url="https://api.groq.com/openai/v1",
-        api_key=GROQ_API_KEY,
-        timeout=30,
-    )
-    completion = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",  # free, fast, good
-        messages=[{"role": "user", "content": prompt}],
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
-    return completion.choices[0].message.content.strip()
+    
+    # Models in order of preference (all free and available on Groq)
+    models_to_try = [
+        "llama-3.3-70b-versatile",
+        "mixtral-8x7b-32768",
+        "llama3-70b-8192",
+        "llama3-8b-8192"
+    ]
+    last_error = None
+    for model in models_to_try:
+        try:
+            client = OpenAI(
+                base_url="https://api.groq.com/openai/v1",
+                api_key=GROQ_API_KEY,
+                timeout=30,
+            )
+            completion = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            return completion.choices[0].message.content.strip()
+        except Exception as e:
+            last_error = e
+            print(f"   Groq model '{model}' failed: {e}")
+            continue
+    raise last_error
 
 def llm_generate_questions(category, count):
     instructions = {
@@ -487,10 +512,8 @@ Answer in JSON: {{"verdict": "PASS" or "FAIL", "reason": "one sentence"}}"""
     return result["verdict"], result["reason"]
 
 def ask_chatbot_question(driver, question):
-    """Send a single question to the chatbot and return the response."""
     driver.get(CHATBOT_URL)
     time.sleep(3)
-    # Open chat widget
     click_if_present(driver, [
         (By.ID, "chat-toggle"), (By.ID, "chatbot-toggle"),
         (By.CSS_SELECTOR, ".chat-toggle"), (By.CSS_SELECTOR, ".chatbot-toggle"),
@@ -498,12 +521,10 @@ def ask_chatbot_question(driver, question):
         (By.XPATH, "//button[contains(., 'Chat')]"), (By.XPATH, "//button[contains(., 'Ask')]"),
     ], timeout=5)
     time.sleep(2)
-    # Accept disclaimer
     click_if_present(driver, [
         (By.XPATH, "//button[contains(text(), 'I understand')]"),
         (By.XPATH, "//button[contains(text(), 'Accept')]"),
     ], timeout=5)
-    # Find input field
     input_locators = [
         (By.CSS_SELECTOR, "input[placeholder*='message']"),
         (By.CSS_SELECTOR, "textarea[placeholder*='message']"),
@@ -531,7 +552,6 @@ def ask_chatbot_question(driver, question):
     ], timeout=2):
         input_field.send_keys(Keys.ENTER)
     time.sleep(12)
-    # Extract response
     response_selectors = [
         (By.CSS_SELECTOR, ".bot-message"), (By.CSS_SELECTOR, ".latest-reply"),
         (By.CSS_SELECTOR, ".reply"), (By.CSS_SELECTOR, ".message.bot"),
@@ -600,34 +620,44 @@ def generate_sanity_report(results_summary, detailed, output_filename):
 
 def run_chatbot_sanity(driver):
     print("\n--- Chatbot Sanity Test ---")
-    # Try to use Groq LLM
     use_llm = False
     try:
         if GROQ_API_KEY:
-            call_groq("Say OK", max_tokens=5)
+            # Test with a simple ping using a reliable model
+            test_prompt = "Say OK"
+            call_groq(test_prompt, max_tokens=5)
             use_llm = True
             print("   Groq LLM available – generating fresh questions.")
         else:
-            print("   Groq API key missing – using large static bank (random selection).")
+            print("   Groq API key missing – using static bank.")
     except Exception as e:
-        print(f"   Groq LLM failed ({e}) – using large static bank (random selection).")
+        print(f"   Groq LLM failed: {e}. Using large static bank (random selection).")
         use_llm = False
 
-    # Prepare questions
     generated = {}
     for cat, count in CATEGORIES.items():
         if cat == "Conversation Test":
             generated[cat] = CONVERSATION_SCENARIO
         else:
             if use_llm:
-                questions = llm_generate_questions(cat, count)
-                generated[cat] = questions
-                print(f"   Generated {len(questions)} questions for {cat}")
+                try:
+                    questions = llm_generate_questions(cat, count)
+                    generated[cat] = questions
+                    print(f"   Generated {len(questions)} questions for {cat}")
+                except Exception as e:
+                    print(f"   LLM generation failed for {cat}: {e}. Falling back to static bank.")
+                    use_llm = False  # fall back for all subsequent categories
+                    # Proceed to static for this category
+                    bank = LARGE_STATIC_BANK.get(cat, [])
+                    if len(bank) < count:
+                        count = len(bank)
+                    selected = random.sample(bank, count) if count > 0 else []
+                    generated[cat] = selected
+                    print(f"   Randomly selected {len(selected)} questions for {cat} (static)")
             else:
                 bank = LARGE_STATIC_BANK.get(cat, [])
                 if len(bank) < count:
                     count = len(bank)
-                # Randomly sample to avoid same questions every day
                 selected = random.sample(bank, count) if count > 0 else []
                 generated[cat] = selected
                 print(f"   Randomly selected {len(selected)} questions for {cat} (static)")
