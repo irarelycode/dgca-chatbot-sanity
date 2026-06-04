@@ -150,7 +150,7 @@ def send_email(attachments, subject="DGCA Automation Report"):
     msg["From"] = SMTP_USER
     msg["To"] = ", ".join(RECIPIENTS)
     msg["Subject"] = subject
-    body = "Please find attached the daily DGCA automation reports."
+    body = "Dear Team, Please find attached the daily DGCA automation reports."
     msg.attach(MIMEText(body, "plain"))
     for file_path in attachments:
         with open(file_path, "rb") as f:
