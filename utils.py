@@ -1,8 +1,3 @@
-#!/usr/bin/env python3
-"""
-Shared utilities for DGCA automation
-"""
-
 import os
 import time
 import smtplib
@@ -13,8 +8,11 @@ from email.mime.base import MIMEBase
 from email import encoders
 
 from selenium import webdriver
+from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
 
 # ==========================================================
 # LOAD CONFIG
@@ -49,7 +47,7 @@ SCREENSHOT_DIR = os.path.join(OUTPUT_DIR, "screenshots")
 os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 
 # ==========================================================
-# DRIVER CREATION
+# DRIVER CREATION AND HELPERS
 # ==========================================================
 def create_driver():
     options = Options()
@@ -90,6 +88,34 @@ def safe_click(driver, element):
         element.click()
     except Exception:
         driver.execute_script("arguments[0].click();", element)
+
+def click_if_present(driver, locators, timeout=5):
+    for by, value in locators:
+        try:
+            elem = WebDriverWait(driver, timeout).until(EC.element_to_be_clickable((by, value)))
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", elem)
+            time.sleep(0.5)
+            try:
+                elem.click()
+            except:
+                driver.execute_script("arguments[0].click();", elem)
+            return True
+        except:
+            continue
+    return False
+
+def first_visible_element(driver, locators, timeout=30):
+    last_error = None
+    for by, value in locators:
+        try:
+            elem = WebDriverWait(driver, timeout).until(EC.presence_of_element_located((by, value)))
+            if elem and elem.is_displayed():
+                return elem
+        except Exception as e:
+            last_error = e
+    if last_error:
+        raise last_error
+    raise TimeoutException("No matching element found.")
 
 def save_error_screenshot(driver, filename="error.png"):
     path = os.path.join(OUTPUT_DIR, filename)
