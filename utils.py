@@ -30,11 +30,11 @@ RECIPIENTS = os.getenv("RECIPIENTS", "").split(",")
 if not RECIPIENTS and "EMAIL_RECIPIENTS" in config:
     RECIPIENTS = [value.strip() for key, value in config["EMAIL_RECIPIENTS"].items() if key.startswith("recipient_")]
 
-# Chatbot config (used by sanity module)
+# Chatbot config
 CHATBOT_URL = os.getenv("CHATBOT_URL", config.get("CHATBOT", "URL", fallback="https://www.dgca.gov.in/digigov-portal/"))
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
-# Superset config (used by dashboard module)
+# Superset config
 SUPERSET_BASE_URL = "http://20.244.27.216:8088"
 SUPERSET_HOME_URL = f"{SUPERSET_BASE_URL}/superset/welcome/"
 DASHBOARD_NAME = "DGCA Chatbot Dashboard"
