@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DGCA Complete Automation – Dashboard PDF + Chatbot Sanity with Screenshots
+DGCA Complete Automation – Dashboard PDF + Chatbot Sanity with Screenshots (FIXED)
 """
 
 import os
@@ -168,7 +168,7 @@ def send_email(attachments, subject="DGCA Automation Report"):
     print("   Email sent successfully.")
 
 # ==========================================================
-# SUPERSET DASHBOARD PDF
+# SUPERSET DASHBOARD PDF (unchanged)
 # ==========================================================
 def login_superset(driver):
     print("\n1. Opening Superset...")
@@ -295,7 +295,7 @@ def export_dashboard_pdf(driver):
         return screenshot_path
 
 # ==========================================================
-# CHATBOT SANITY – WITH SCREENSHOTS
+# CHATBOT SANITY – WITH CORRECT SCREENSHOTS
 # ==========================================================
 
 # Large static bank (fallback)
@@ -510,24 +510,23 @@ Answer in JSON: {{"verdict": "PASS" or "FAIL", "reason": "one sentence"}}"""
     result = json.loads(raw)
     return result["verdict"], result["reason"]
 
-# ========== MODIFIED: ask_chatbot_question with screenshot ==========
+# ========== FIXED: ask_chatbot_question with proper screenshot ==========
 def ask_chatbot_question(driver, question, idx):
     driver.get(CHATBOT_URL)
     time.sleep(3)
-    # Launcher
-    click_if_present(driver, [
-        (By.ID, "chat-toggle"), (By.ID, "chatbot-toggle"),
-        (By.CSS_SELECTOR, ".chat-toggle"), (By.CSS_SELECTOR, ".chatbot-toggle"),
-        (By.CSS_SELECTOR, "[aria-label*='chat']"),
-        (By.XPATH, "//button[contains(., 'Chat')]"), (By.XPATH, "//button[contains(., 'Ask')]"),
-    ], timeout=5)
-    time.sleep(2)
-    # Disclaimer
-    click_if_present(driver, [
-        (By.XPATH, "//button[contains(text(), 'I understand')]"),
-        (By.XPATH, "//button[contains(text(), 'Accept')]"),
-    ], timeout=5)
-    # Input field
+    
+    # Dismiss disclaimer FIRST – wait until it's gone
+    try:
+        accept_btn = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'I understand')]"))
+        )
+        accept_btn.click()
+        print("   Disclaimer accepted.")
+        time.sleep(2)
+    except:
+        pass  # No disclaimer or already accepted
+    
+    # Wait for the chat widget to be fully loaded (input field)
     input_locators = [
         (By.CSS_SELECTOR, "input[placeholder*='message']"),
         (By.CSS_SELECTOR, "textarea[placeholder*='message']"),
@@ -535,55 +534,83 @@ def ask_chatbot_question(driver, question, idx):
         (By.CSS_SELECTOR, "textarea"),
         (By.XPATH, "//input[@type='text']")
     ]
-    input_field = first_visible_element(driver, input_locators, timeout=15)
+    input_field = first_visible_element(driver, input_locators, timeout=30)
+    
+    # Click to focus
     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", input_field)
     time.sleep(0.5)
     try:
         input_field.click()
     except:
         driver.execute_script("arguments[0].click();", input_field)
+    
+    # Clear and type
     try:
         input_field.clear()
     except:
         driver.execute_script("arguments[0].value = '';", input_field)
     input_field.send_keys(question)
     time.sleep(0.5)
+    
+    # Send
     if not click_if_present(driver, [
         (By.XPATH, "//button[contains(., 'Send')]"),
         (By.XPATH, "//button[contains(., 'Submit')]"),
         (By.XPATH, "//button[contains(@aria-label, 'send')]"),
     ], timeout=2):
         input_field.send_keys(Keys.ENTER)
+    
+    # Wait for response (looking for a new bot message)
     time.sleep(12)
-    # Extract response
+    
+    # Find the latest bot message element (response container)
     response_selectors = [
-        (By.CSS_SELECTOR, ".bot-message"), (By.CSS_SELECTOR, ".latest-reply"),
-        (By.CSS_SELECTOR, ".reply"), (By.CSS_SELECTOR, ".message.bot"),
-        (By.CSS_SELECTOR, ".bubble"), (By.CSS_SELECTOR, "[class*='bot']"),
+        (By.CSS_SELECTOR, ".bot-message"),
+        (By.CSS_SELECTOR, ".latest-reply"),
+        (By.CSS_SELECTOR, ".reply"),
+        (By.CSS_SELECTOR, ".message.bot"),
+        (By.CSS_SELECTOR, ".bubble"),
+        (By.CSS_SELECTOR, "[class*='bot']"),
         (By.CSS_SELECTOR, "[class*='answer']"),
         (By.XPATH, "//div[contains(@class, 'bot')]//p")
     ]
     response_text = ""
+    response_element = None
     for by, val in response_selectors:
         elems = driver.find_elements(by, val)
-        for e in reversed(elems):
-            if e.is_displayed() and e.text.strip():
-                response_text = e.text.strip()
+        if elems:
+            # Take the last visible message
+            for e in reversed(elems):
+                if e.is_displayed() and e.text.strip():
+                    response_text = e.text.strip()
+                    response_element = e
+                    break
+            if response_text:
                 break
-        if response_text:
-            break
+    
     if not response_text:
         response_text = "Could not extract chatbot response."
     
-    # Take screenshot of the entire page (shows the chat)
-    screenshot_filename = f"response_{int(time.time())}_{idx}.png"
+    # Take screenshot of the response element (or the whole page if element not found)
+    timestamp = int(time.time())
+    screenshot_filename = f"response_{timestamp}_{idx}.png"
     screenshot_path = os.path.join(SCREENSHOT_DIR, screenshot_filename)
-    driver.save_screenshot(screenshot_path)
-    print(f"   Screenshot saved: {screenshot_path}")
+    
+    if response_element:
+        # Scroll the response element into view and capture its screenshot
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", response_element)
+        time.sleep(0.5)
+        # Take screenshot of the whole page (now the response is visible)
+        driver.save_screenshot(screenshot_path)
+        print(f"   Screenshot saved (response visible): {screenshot_path}")
+    else:
+        # Fallback: full page screenshot
+        driver.save_screenshot(screenshot_path)
+        print(f"   Screenshot saved (full page): {screenshot_path}")
     
     return response_text, screenshot_path
 
-# ========== MODIFIED: Word report with screenshots ==========
+# ========== Word report generation (unchanged) ==========
 def generate_sanity_report(results_summary, detailed, output_filename):
     doc = Document()
     doc.add_heading(f"Sanity Check on DGCA Chatbot -- {datetime.now().strftime('%d/%m/%Y')}", 0)
@@ -675,7 +702,6 @@ def run_chatbot_sanity(driver):
                 except Exception as e:
                     print(f"   LLM generation failed for {cat}: {e}. Falling back to static bank.")
                     use_llm = False  # fall back for all subsequent categories
-                    # Proceed to static for this category
                     bank = LARGE_STATIC_BANK.get(cat, [])
                     if len(bank) < count:
                         count = len(bank)
@@ -741,7 +767,7 @@ def run_chatbot_sanity(driver):
 # ==========================================================
 def main():
     print("=" * 80)
-    print("DGCA COMPLETE AUTOMATION – Dashboard PDF + Chatbot Sanity with Screenshots")
+    print("DGCA COMPLETE AUTOMATION – Dashboard PDF + Chatbot Sanity with Screenshots (FIXED)")
     print("=" * 80)
     driver = create_driver()
     attachments = []
