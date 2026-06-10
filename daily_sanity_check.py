@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-DGCA Complete Automation – Dashboard PDF + Chatbot Sanity
-Uses Groq LLM (free) for fresh questions. Falls back to large static bank only if Groq fails.
+DGCA Complete Automation – Dashboard PDF + Chatbot Sanity with Screenshots
 """
 
 import os
@@ -27,6 +26,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 from docx import Document
+from docx.shared import Inches
 
 # LLM import – Groq uses OpenAI library
 try:
@@ -62,6 +62,8 @@ PASSWORD = "Dashboard@2026"
 
 OUTPUT_DIR = os.path.abspath("./reports")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+SCREENSHOT_DIR = os.path.join(OUTPUT_DIR, "screenshots")
+os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 
 # ==========================================================
 # HELPER FUNCTIONS
@@ -150,7 +152,7 @@ def send_email(attachments, subject="DGCA Automation Report"):
     msg["From"] = SMTP_USER
     msg["To"] = ", ".join(RECIPIENTS)
     msg["Subject"] = subject
-    body = "Dear Team, Please find attached the daily DGCA automation reports."
+    body = "Please find attached the daily DGCA automation reports."
     msg.attach(MIMEText(body, "plain"))
     for file_path in attachments:
         with open(file_path, "rb") as f:
@@ -166,7 +168,7 @@ def send_email(attachments, subject="DGCA Automation Report"):
     print("   Email sent successfully.")
 
 # ==========================================================
-# SUPERSET DASHBOARD PDF (same as before)
+# SUPERSET DASHBOARD PDF
 # ==========================================================
 def login_superset(driver):
     print("\n1. Opening Superset...")
@@ -293,10 +295,10 @@ def export_dashboard_pdf(driver):
         return screenshot_path
 
 # ==========================================================
-# CHATBOT SANITY – WITH GROQ LLM + LARGE STATIC BANK FALLBACK
+# CHATBOT SANITY – WITH SCREENSHOTS
 # ==========================================================
 
-# Large static bank (used only if Groq fails)
+# Large static bank (fallback)
 LARGE_STATIC_BANK = {
     "Voice": [
         "मैं अपना कमर्शियल पायलट लाइसेंस कैसे प्राप्त करूं",
@@ -436,13 +438,10 @@ def rule_evaluate(category, question, response):
     else:
         return "PASS"
 
-# LLM helpers using Groq (robust)
+# LLM helpers (Groq)
 def call_groq(prompt, max_tokens=500, temperature=0.7):
-    """Call Groq API with fallback models."""
     if not GROQ_API_KEY:
         raise Exception("GROQ_API_KEY not set")
-    
-    # Models in order of preference (all free and available on Groq)
     models_to_try = [
         "llama-3.3-70b-versatile",
         "mixtral-8x7b-32768",
@@ -511,9 +510,11 @@ Answer in JSON: {{"verdict": "PASS" or "FAIL", "reason": "one sentence"}}"""
     result = json.loads(raw)
     return result["verdict"], result["reason"]
 
-def ask_chatbot_question(driver, question):
+# ========== MODIFIED: ask_chatbot_question with screenshot ==========
+def ask_chatbot_question(driver, question, idx):
     driver.get(CHATBOT_URL)
     time.sleep(3)
+    # Launcher
     click_if_present(driver, [
         (By.ID, "chat-toggle"), (By.ID, "chatbot-toggle"),
         (By.CSS_SELECTOR, ".chat-toggle"), (By.CSS_SELECTOR, ".chatbot-toggle"),
@@ -521,10 +522,12 @@ def ask_chatbot_question(driver, question):
         (By.XPATH, "//button[contains(., 'Chat')]"), (By.XPATH, "//button[contains(., 'Ask')]"),
     ], timeout=5)
     time.sleep(2)
+    # Disclaimer
     click_if_present(driver, [
         (By.XPATH, "//button[contains(text(), 'I understand')]"),
         (By.XPATH, "//button[contains(text(), 'Accept')]"),
     ], timeout=5)
+    # Input field
     input_locators = [
         (By.CSS_SELECTOR, "input[placeholder*='message']"),
         (By.CSS_SELECTOR, "textarea[placeholder*='message']"),
@@ -552,6 +555,7 @@ def ask_chatbot_question(driver, question):
     ], timeout=2):
         input_field.send_keys(Keys.ENTER)
     time.sleep(12)
+    # Extract response
     response_selectors = [
         (By.CSS_SELECTOR, ".bot-message"), (By.CSS_SELECTOR, ".latest-reply"),
         (By.CSS_SELECTOR, ".reply"), (By.CSS_SELECTOR, ".message.bot"),
@@ -559,13 +563,27 @@ def ask_chatbot_question(driver, question):
         (By.CSS_SELECTOR, "[class*='answer']"),
         (By.XPATH, "//div[contains(@class, 'bot')]//p")
     ]
+    response_text = ""
     for by, val in response_selectors:
         elems = driver.find_elements(by, val)
         for e in reversed(elems):
             if e.is_displayed() and e.text.strip():
-                return e.text.strip()
-    return "Could not extract chatbot response."
+                response_text = e.text.strip()
+                break
+        if response_text:
+            break
+    if not response_text:
+        response_text = "Could not extract chatbot response."
+    
+    # Take screenshot of the entire page (shows the chat)
+    screenshot_filename = f"response_{int(time.time())}_{idx}.png"
+    screenshot_path = os.path.join(SCREENSHOT_DIR, screenshot_filename)
+    driver.save_screenshot(screenshot_path)
+    print(f"   Screenshot saved: {screenshot_path}")
+    
+    return response_text, screenshot_path
 
+# ========== MODIFIED: Word report with screenshots ==========
 def generate_sanity_report(results_summary, detailed, output_filename):
     doc = Document()
     doc.add_heading(f"Sanity Check on DGCA Chatbot -- {datetime.now().strftime('%d/%m/%Y')}", 0)
@@ -589,6 +607,12 @@ def generate_sanity_report(results_summary, detailed, output_filename):
         row.cells[1].text = topic
         row.cells[2].text = results_summary.get(topic, "PASS (manual)")
     doc.add_page_break()
+
+    def add_screenshot(doc, path, width=5.0):
+        if os.path.exists(path):
+            doc.add_picture(path, width=Inches(width))
+            doc.add_paragraph()
+
     def add_section(title, qa_list):
         if not qa_list:
             return
@@ -598,15 +622,19 @@ def generate_sanity_report(results_summary, detailed, output_filename):
             for i, sub in enumerate(qa_list['qa'], 1):
                 doc.add_paragraph(f"{i}. {sub['question']}", style='List Number')
                 doc.add_paragraph(f"Response: {sub['response']}")
+                add_screenshot(doc, sub['screenshot'])
                 doc.add_paragraph(f"Status: {sub['status']}")
                 doc.add_paragraph("")
         else:
-            for q, a, s in qa_list:
+            for item in qa_list:
+                q, a, s_path, s = item
                 doc.add_paragraph(f"Question: {q}", style='List Bullet')
                 doc.add_paragraph(f"Chatbot Response: {a}")
+                add_screenshot(doc, s_path)
                 doc.add_paragraph(f"Status: {s}")
                 doc.add_paragraph("")
         doc.add_page_break()
+
     add_section("Voice", detailed.get("Voice_qa", []))
     add_section("Conversation Test", detailed.get("Conversation_Detail", {}))
     add_section("Suggested Question", detailed.get("Suggested_qa", []))
@@ -615,17 +643,17 @@ def generate_sanity_report(results_summary, detailed, output_filename):
     add_section("Fees related Question", detailed.get("Fees_qa", []))
     add_section("Passenger Related Question", detailed.get("Passenger_qa", []))
     add_section("Bilingual Question", detailed.get("Bilingual_qa", []))
+
     doc.save(output_filename)
     print(f"   Sanity report saved: {output_filename}")
 
+# ========== MAIN CHATBOT SANITY ROUTINE ==========
 def run_chatbot_sanity(driver):
     print("\n--- Chatbot Sanity Test ---")
     use_llm = False
     try:
         if GROQ_API_KEY:
-            # Test with a simple ping using a reliable model
-            test_prompt = "Say OK"
-            call_groq(test_prompt, max_tokens=5)
+            call_groq("Say OK", max_tokens=5)
             use_llm = True
             print("   Groq LLM available – generating fresh questions.")
         else:
@@ -668,10 +696,10 @@ def run_chatbot_sanity(driver):
     def process_items(category, items, is_conversation=False):
         qa_list = []
         all_pass = True
-        for item in items:
+        for idx, item in enumerate(items):
             q = item if not is_conversation else item
             print(f"   Asking [{category}]: {q[:80]}...")
-            resp = ask_chatbot_question(driver, q)
+            resp, s_path = ask_chatbot_question(driver, q, idx)
             if use_llm:
                 try:
                     verdict, reason = llm_evaluate(category, q, resp)
@@ -682,9 +710,9 @@ def run_chatbot_sanity(driver):
             else:
                 status = rule_evaluate(category, q, resp)
             if is_conversation:
-                qa_list.append({"question": q, "response": resp, "status": status})
+                qa_list.append({"question": q, "response": resp, "screenshot": s_path, "status": status})
             else:
-                qa_list.append((q, resp, status))
+                qa_list.append((q, resp, s_path, status))
             if "FAIL" in status:
                 all_pass = False
         results_summary[category] = "PASS" if all_pass else "FAIL"
@@ -713,7 +741,7 @@ def run_chatbot_sanity(driver):
 # ==========================================================
 def main():
     print("=" * 80)
-    print("DGCA COMPLETE AUTOMATION – Dashboard PDF + Chatbot Sanity")
+    print("DGCA COMPLETE AUTOMATION – Dashboard PDF + Chatbot Sanity with Screenshots")
     print("=" * 80)
     driver = create_driver()
     attachments = []
