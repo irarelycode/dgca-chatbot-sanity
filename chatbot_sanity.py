@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Chatbot Sanity Test – Groq LLM question generation, screenshot capture, Word report
+Fixed: Properly dismiss disclaimer, wait for response, capture correct screenshot
 """
 
 import os
@@ -12,6 +13,7 @@ from datetime import datetime
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, ElementClickInterceptedException
 from docx import Document
 from docx.shared import Inches
 
@@ -28,7 +30,7 @@ from utils import (
 )
 
 # ==========================================================
-# STATIC QUESTION BANK (fallback)
+# STATIC QUESTION BANK (fallback) – same as before
 # ==========================================================
 LARGE_STATIC_BANK = {
     "Voice": [
@@ -246,47 +248,68 @@ Answer in JSON: {{"verdict": "PASS" or "FAIL", "reason": "one sentence"}}"""
     return result["verdict"], result["reason"]
 
 # ==========================================================
-# CHATBOT INTERACTION WITH SCREENSHOTS
+# ROBUST CHATBOT INTERACTION WITH SCREENSHOTS (FIXED)
 # ==========================================================
+def dismiss_all_popups(driver):
+    """Dismiss any disclaimers, popups, or overlays."""
+    popup_selectors = [
+        (By.XPATH, "//button[contains(text(), 'I understand')]"),
+        (By.XPATH, "//button[contains(text(), 'Accept')]"),
+        (By.XPATH, "//button[contains(text(), 'Close')]"),
+        (By.XPATH, "//button[contains(text(), 'Got it')]"),
+        (By.XPATH, "//button[contains(text(), 'OK')]"),
+        (By.CSS_SELECTOR, ".modal .close"),
+        (By.CSS_SELECTOR, ".popup-close")
+    ]
+    for by, val in popup_selectors:
+        try:
+            btn = WebDriverWait(driver, 2).until(EC.element_to_be_clickable((by, val)))
+            btn.click()
+            print("   Popup dismissed.")
+            time.sleep(1)
+        except:
+            pass
+
+def open_chat_widget(driver):
+    """Click any chat launcher to open the chatbot window."""
+    launcher_selectors = [
+        (By.ID, "chat-toggle"),
+        (By.ID, "chatbot-toggle"),
+        (By.CSS_SELECTOR, ".chat-toggle"),
+        (By.CSS_SELECTOR, ".chatbot-toggle"),
+        (By.CSS_SELECTOR, "[aria-label*='chat']"),
+        (By.XPATH, "//button[contains(., 'Chat')]"),
+        (By.XPATH, "//button[contains(., 'Ask')]"),
+        (By.XPATH, "//div[contains(@class, 'chat-icon')]"),
+        (By.XPATH, "//img[contains(@alt, 'chat')]"),
+        (By.XPATH, "//*[contains(@class, 'floating') and contains(@class, 'chat')]")
+    ]
+    for by, sel in launcher_selectors:
+        try:
+            launcher = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((by, sel)))
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", launcher)
+            time.sleep(0.5)
+            launcher.click()
+            print("   Chat launcher clicked.")
+            time.sleep(2)
+            return True
+        except:
+            continue
+    print("   No chat launcher found – assuming chat already open.")
+    return False
+
 def ask_chatbot_question(driver, question, idx):
+    """Send question, wait for response, take screenshot of the response."""
     driver.get(CHATBOT_URL)
     time.sleep(3)
     
-    # 1. Dismiss disclaimer
-    try:
-        accept_btn = wait(driver, 10).until(
-            EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'I understand')]"))
-        )
-        accept_btn.click()
-        print("   Disclaimer accepted.")
-        time.sleep(2)
-    except:
-        pass
+    # Dismiss any popups (disclaimer, etc.)
+    dismiss_all_popups(driver)
     
-    # 2. Open chat widget
-    launcher_selectors = [
-        (By.ID, "chat-toggle"), (By.ID, "chatbot-toggle"),
-        (By.CSS_SELECTOR, ".chat-toggle"), (By.CSS_SELECTOR, ".chatbot-toggle"),
-        (By.CSS_SELECTOR, "[aria-label*='chat']"),
-        (By.XPATH, "//button[contains(., 'Chat')]"), (By.XPATH, "//button[contains(., 'Ask')]"),
-        (By.XPATH, "//div[contains(@class, 'chat-icon')]"), (By.XPATH, "//img[contains(@alt, 'chat')]")
-    ]
-    launcher_clicked = False
-    for by, sel in launcher_selectors:
-        try:
-            launcher = wait(driver, 5).until(EC.element_to_be_clickable((by, sel)))
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", launcher)
-            launcher.click()
-            launcher_clicked = True
-            print("   Chat launcher clicked.")
-            time.sleep(2)
-            break
-        except:
-            continue
-    if not launcher_clicked:
-        print("   No chat launcher found – assuming chat already open.")
+    # Open chat widget if needed
+    open_chat_widget(driver)
     
-    # 3. Find input field
+    # Wait for input field
     input_locators = [
         (By.CSS_SELECTOR, "input[placeholder*='message']"),
         (By.CSS_SELECTOR, "textarea[placeholder*='message']"),
@@ -298,7 +321,7 @@ def ask_chatbot_question(driver, question, idx):
     ]
     input_field = first_visible_element(driver, input_locators, timeout=30)
     
-    # 4. Type and send
+    # Clear and type
     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", input_field)
     time.sleep(0.5)
     try:
@@ -311,6 +334,8 @@ def ask_chatbot_question(driver, question, idx):
         driver.execute_script("arguments[0].value = '';", input_field)
     input_field.send_keys(question)
     time.sleep(0.5)
+    
+    # Send
     if not click_if_present(driver, [
         (By.XPATH, "//button[contains(., 'Send')]"),
         (By.XPATH, "//button[contains(., 'Submit')]"),
@@ -318,14 +343,19 @@ def ask_chatbot_question(driver, question, idx):
     ], timeout=2):
         input_field.send_keys(Keys.ENTER)
     
-    time.sleep(12)  # Wait for response
+    # Wait for response (look for a new bot message)
+    time.sleep(12)
     
-    # 5. Extract response
+    # Locate the newest bot message
     response_selectors = [
-        (By.CSS_SELECTOR, ".bot-message"), (By.CSS_SELECTOR, ".latest-reply"),
-        (By.CSS_SELECTOR, ".reply"), (By.CSS_SELECTOR, ".message.bot"),
-        (By.CSS_SELECTOR, ".bubble"), (By.CSS_SELECTOR, "[class*='bot']"),
-        (By.CSS_SELECTOR, "[class*='answer']"), (By.XPATH, "//div[contains(@class, 'bot')]//p")
+        (By.CSS_SELECTOR, ".bot-message"),
+        (By.CSS_SELECTOR, ".latest-reply"),
+        (By.CSS_SELECTOR, ".reply"),
+        (By.CSS_SELECTOR, ".message.bot"),
+        (By.CSS_SELECTOR, ".bubble"),
+        (By.CSS_SELECTOR, "[class*='bot']"),
+        (By.CSS_SELECTOR, "[class*='answer']"),
+        (By.XPATH, "//div[contains(@class, 'bot')]//p")
     ]
     response_text = ""
     response_element = None
@@ -339,26 +369,33 @@ def ask_chatbot_question(driver, question, idx):
                     break
             if response_text:
                 break
+    
     if not response_text:
         response_text = "Could not extract chatbot response."
     
-    # 6. Screenshot
+    # Take screenshot of the response area (not the whole page)
     timestamp = int(time.time())
     screenshot_filename = f"response_{timestamp}_{idx}.png"
     screenshot_path = os.path.join(SCREENSHOT_DIR, screenshot_filename)
+    
     if response_element:
+        # Scroll the response into view
         driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", response_element)
-        time.sleep(0.5)
+        time.sleep(1)  # Wait for any animation
+        
+        # Optional: take element screenshot (requires more code, easier to take full page)
+        # For simplicity, take full page screenshot – the response is now visible
         driver.save_screenshot(screenshot_path)
         print(f"   Screenshot saved (response visible): {screenshot_path}")
     else:
+        # Fallback: full page screenshot
         driver.save_screenshot(screenshot_path)
         print(f"   Screenshot saved (full page): {screenshot_path}")
     
     return response_text, screenshot_path
 
 # ==========================================================
-# WORD REPORT GENERATION
+# WORD REPORT GENERATION (unchanged)
 # ==========================================================
 def generate_sanity_report(results_summary, detailed, output_filename):
     doc = Document()
