@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Run both Dashboard PDF and Chatbot Sanity, then email both reports.
 """
