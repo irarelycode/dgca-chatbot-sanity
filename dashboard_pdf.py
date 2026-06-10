@@ -1,16 +1,15 @@
-#!/usr/bin/env python3
 """
-Superset Dashboard PDF Export – standalone module
+Superset Dashboard – Full page screenshot (reliable fallback)
 """
 
 import time
-import base64
 import os
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
+from PIL import Image
 
 from utils import (
-    create_driver, wait, safe_click, send_email, OUTPUT_DIR,
+    create_driver, wait, safe_click, OUTPUT_DIR,
     SUPERSET_HOME_URL, DASHBOARD_NAME, USERNAME, PASSWORD
 )
 
@@ -90,53 +89,33 @@ def wait_for_charts(driver, timeout=300, min_charts=20):
     print("   Chart loading timeout reached.")
     return False
 
-def export_dashboard_pdf(driver):
-    print("\n6. Exporting dashboard PDF...")
-    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-    time.sleep(3)
-    driver.execute_script("window.scrollTo(0, 0);")
-    time.sleep(2)
-    try:
-        wait(driver, 60).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, ".dashboard-component-chart-holder canvas, .dashboard-component-chart-holder svg"))
-        )
-        print("   Charts detected.")
-    except:
-        print("   No charts detected – continuing anyway.")
-    driver.execute_script("window.dispatchEvent(new Event('resize'));")
-    time.sleep(2)
+def dashboard_full_page_screenshot(driver):
+    """Take a full-page screenshot and convert to PDF."""
+    print("\n6. Taking full-page screenshot of dashboard...")
+    # Get full page dimensions
     total_width = driver.execute_script("return Math.max(document.body.scrollWidth, document.documentElement.scrollWidth);")
     total_height = driver.execute_script("return Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);")
-    print(f"   Page size detected: {total_width} x {total_height}")
+    print(f"   Page size: {total_width} x {total_height}")
+    
+    # Temporarily set window size to full page
+    original_size = driver.get_window_size()
     driver.set_window_size(max(total_width, 1600), max(total_height, 1200))
     time.sleep(3)
-    pdf_options = {
-        "landscape": True,
-        "displayHeaderFooter": False,
-        "printBackground": True,
-        "preferCSSPageSize": False,
-        "paperWidth": 16.5,
-        "paperHeight": 11.7,
-        "marginTop": 0.2,
-        "marginBottom": 0.2,
-        "marginLeft": 0.2,
-        "marginRight": 0.2,
-        "scale": 0.8,
-        "transferMode": "ReturnAsBase64"
-    }
-    try:
-        result = driver.execute_cdp_cmd("Page.printToPDF", pdf_options)
-        pdf_bytes = base64.b64decode(result["data"])
-        pdf_path = os.path.join(OUTPUT_DIR, f"DGCA_Dashboard_{int(time.time())}.pdf")
-        with open(pdf_path, "wb") as f:
-            f.write(pdf_bytes)
-        print(f"   PDF saved: {pdf_path}")
-        return pdf_path
-    except Exception as e:
-        print(f"   CDP PDF generation failed: {e}. Saving screenshot as fallback.")
-        screenshot_path = os.path.join(OUTPUT_DIR, f"DGCA_Dashboard_{int(time.time())}.png")
-        driver.save_screenshot(screenshot_path)
-        return screenshot_path
+    
+    # Take screenshot
+    screenshot_path = os.path.join(OUTPUT_DIR, f"dashboard_screenshot_{int(time.time())}.png")
+    driver.save_screenshot(screenshot_path)
+    print(f"   Screenshot saved: {screenshot_path}")
+    
+    # Convert to PDF
+    pdf_path = screenshot_path.replace(".png", ".pdf")
+    image = Image.open(screenshot_path)
+    image.convert("RGB").save(pdf_path)
+    print(f"   PDF saved: {pdf_path}")
+    
+    # Restore window size
+    driver.set_window_size(original_size['width'], original_size['height'])
+    return pdf_path
 
 def main():
     driver = create_driver()
@@ -146,7 +125,7 @@ def main():
         click_all_tabs(driver)
         force_full_page_render(driver)
         wait_for_charts(driver, timeout=300, min_charts=20)
-        pdf_path = export_dashboard_pdf(driver)
+        pdf_path = dashboard_full_page_screenshot(driver)
         print(f"\nDashboard PDF saved: {pdf_path}")
         return pdf_path
     finally:
