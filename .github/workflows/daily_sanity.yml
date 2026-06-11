@@ -20,7 +20,7 @@ jobs:
           python-version: '3.10'
 
       - name: Install dependencies
-        run: pip install selenium python-docx openai
+        run: pip install selenium python-docx openai pillow
 
       - name: Install Chromium and Chromedriver
         run: |
