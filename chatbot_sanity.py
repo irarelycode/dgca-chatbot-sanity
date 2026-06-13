@@ -151,14 +151,14 @@ def llm_evaluate(category, question, response):
     return result["verdict"], result["reason"]
 
 # ==========================================================
-# CHATBOT INTERACTION WITH SCREENSHOT (reloads page each time)
+# CHATBOT INTERACTION WITH SCREENSHOT
 # ==========================================================
 def ask_chatbot_question(driver, question, idx):
-    # Reload the page to ensure clean state
+    # Reload page for clean state
     driver.get(CHATBOT_URL)
     time.sleep(3)
     
-    # Dismiss disclaimer if present
+    # Dismiss disclaimer
     try:
         accept_btn = wait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'I understand')]")))
         accept_btn.click()
@@ -167,7 +167,21 @@ def ask_chatbot_question(driver, question, idx):
     except:
         pass
     
-    # Wait for the input field – no launcher needed because the chat is embedded
+    # Open chat widget (try all possible launchers)
+    launcher_found = click_if_present(driver, [
+        (By.ID, "chat-toggle"), (By.ID, "chatbot-toggle"),
+        (By.CSS_SELECTOR, ".chat-toggle"), (By.CSS_SELECTOR, ".chatbot-toggle"),
+        (By.XPATH, "//button[contains(., 'Chat')]"), (By.XPATH, "//button[contains(., 'Ask')]"),
+        (By.XPATH, "//div[contains(@class, 'chat-icon')]")
+    ], timeout=5)
+    if launcher_found:
+        print("   Chat launcher clicked.")
+        time.sleep(2)
+    else:
+        # Some websites have chat embedded without launcher – proceed
+        print("   No launcher found – chat may be embedded.")
+    
+    # Wait for input field with increased timeout and multiple retries
     input_locators = [
         (By.CSS_SELECTOR, "input[placeholder*='message']"),
         (By.CSS_SELECTOR, "textarea[placeholder*='message']"),
@@ -175,7 +189,22 @@ def ask_chatbot_question(driver, question, idx):
         (By.CSS_SELECTOR, "textarea"),
         (By.XPATH, "//input[@type='text']")
     ]
-    input_field = first_visible_element(driver, input_locators, timeout=30)
+    input_field = None
+    for attempt in range(3):
+        for by, val in input_locators:
+            try:
+                elem = WebDriverWait(driver, 15).until(EC.presence_of_element_located((by, val)))
+                if elem and elem.is_displayed() and elem.is_enabled():
+                    input_field = elem
+                    break
+            except:
+                continue
+        if input_field:
+            break
+        print(f"   Input field not found, retry {attempt+1}/3")
+        time.sleep(5)
+    if not input_field:
+        raise Exception("Could not find input field after multiple attempts")
     
     # Type and send
     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", input_field)
@@ -194,10 +223,10 @@ def ask_chatbot_question(driver, question, idx):
     if not click_if_present(driver, [(By.XPATH, "//button[contains(., 'Send')]")], timeout=2):
         input_field.send_keys(Keys.ENTER)
     
-    # Wait for response (allow 15 seconds)
+    # Wait for response
     time.sleep(15)
     
-    # Find the latest bot message
+    # Find response
     response_selectors = [
         (By.CSS_SELECTOR, ".bot-message"), (By.CSS_SELECTOR, ".latest-reply"),
         (By.CSS_SELECTOR, ".reply"), (By.CSS_SELECTOR, ".message.bot"),
@@ -218,7 +247,7 @@ def ask_chatbot_question(driver, question, idx):
     if not response_text:
         response_text = "Could not extract chatbot response."
     
-    # Take screenshot of the response area
+    # Screenshot
     timestamp = int(time.time())
     screenshot_filename = f"response_{timestamp}_{idx}.png"
     screenshot_path = os.path.join(SCREENSHOT_DIR, screenshot_filename)
