@@ -1,5 +1,6 @@
 """
 Chatbot Sanity – Groq LLM generation, screenshot of response area
+(No launcher click – assume chatbot is already visible)
 """
 
 import os
@@ -151,14 +152,14 @@ def llm_evaluate(category, question, response):
     return result["verdict"], result["reason"]
 
 # ==========================================================
-# CHATBOT INTERACTION WITH SCREENSHOT
+# CHATBOT INTERACTION – NO LAUNCHER CLICK (chat already visible)
 # ==========================================================
 def ask_chatbot_question(driver, question, idx):
     # Reload page for clean state
     driver.get(CHATBOT_URL)
-    time.sleep(3)
+    time.sleep(5)  # increased initial wait
     
-    # Dismiss disclaimer
+    # Dismiss disclaimer if present
     try:
         accept_btn = wait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'I understand')]")))
         accept_btn.click()
@@ -167,33 +168,26 @@ def ask_chatbot_question(driver, question, idx):
     except:
         pass
     
-    # Open chat widget (try all possible launchers)
-    launcher_found = click_if_present(driver, [
-        (By.ID, "chat-toggle"), (By.ID, "chatbot-toggle"),
-        (By.CSS_SELECTOR, ".chat-toggle"), (By.CSS_SELECTOR, ".chatbot-toggle"),
-        (By.XPATH, "//button[contains(., 'Chat')]"), (By.XPATH, "//button[contains(., 'Ask')]"),
-        (By.XPATH, "//div[contains(@class, 'chat-icon')]")
-    ], timeout=5)
-    if launcher_found:
-        print("   Chat launcher clicked.")
-        time.sleep(2)
-    else:
-        # Some websites have chat embedded without launcher – proceed
-        print("   No launcher found – chat may be embedded.")
+    # Scroll to bottom of page – chat is often at the bottom
+    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+    time.sleep(2)
     
-    # Wait for input field with increased timeout and multiple retries
+    # Look for input field without clicking any launcher
     input_locators = [
         (By.CSS_SELECTOR, "input[placeholder*='message']"),
         (By.CSS_SELECTOR, "textarea[placeholder*='message']"),
         (By.CSS_SELECTOR, "input[placeholder*='Type']"),
         (By.CSS_SELECTOR, "textarea"),
-        (By.XPATH, "//input[@type='text']")
+        (By.XPATH, "//input[@type='text']"),
+        (By.XPATH, "//textarea"),
+        (By.CSS_SELECTOR, ".chat-input input"),
+        (By.CSS_SELECTOR, ".input-message"),
     ]
     input_field = None
     for attempt in range(3):
         for by, val in input_locators:
             try:
-                elem = WebDriverWait(driver, 15).until(EC.presence_of_element_located((by, val)))
+                elem = WebDriverWait(driver, 10).until(EC.presence_of_element_located((by, val)))
                 if elem and elem.is_displayed() and elem.is_enabled():
                     input_field = elem
                     break
@@ -202,8 +196,15 @@ def ask_chatbot_question(driver, question, idx):
         if input_field:
             break
         print(f"   Input field not found, retry {attempt+1}/3")
-        time.sleep(5)
+        # On retry, try to click on the page to focus
+        driver.execute_script("document.body.click();")
+        time.sleep(3)
+    
     if not input_field:
+        # Save a debug screenshot to see what's on the page
+        debug_path = os.path.join(SCREENSHOT_DIR, f"debug_no_input_{idx}.png")
+        driver.save_screenshot(debug_path)
+        print(f"   Debug screenshot saved: {debug_path}")
         raise Exception("Could not find input field after multiple attempts")
     
     # Type and send
@@ -263,7 +264,7 @@ def ask_chatbot_question(driver, question, idx):
     return response_text, screenshot_path
 
 # ==========================================================
-# WORD REPORT GENERATION
+# WORD REPORT GENERATION (unchanged)
 # ==========================================================
 def generate_sanity_report(results_summary, detailed, output_filename):
     doc = Document()
@@ -328,7 +329,7 @@ def generate_sanity_report(results_summary, detailed, output_filename):
     print(f"   Sanity report saved: {output_filename}")
 
 # ==========================================================
-# MAIN CHATBOT SANITY ROUTINE
+# MAIN CHATBOT SANITY ROUTINE (unchanged)
 # ==========================================================
 def run_chatbot_sanity(driver):
     print("\n--- Chatbot Sanity Test ---")
@@ -376,7 +377,12 @@ def run_chatbot_sanity(driver):
         for idx, item in enumerate(items):
             q = item if not is_conversation else item
             print(f"   Asking [{category}]: {q[:80]}...")
-            resp, s_path = ask_chatbot_question(driver, q, idx)
+            try:
+                resp, s_path = ask_chatbot_question(driver, q, idx)
+            except Exception as e:
+                print(f"   Error: {e}. Using fallback response.")
+                resp = "Could not interact with chatbot"
+                s_path = ""
             if use_llm:
                 try:
                     verdict, reason = llm_evaluate(category, q, resp)
