@@ -1,5 +1,5 @@
 """
-Superset Dashboard – Full page screenshot (reliable fallback)
+Superset Dashboard – Full page screenshot (reliable, no CDP)
 """
 
 import time
@@ -92,28 +92,26 @@ def wait_for_charts(driver, timeout=300, min_charts=20):
 def dashboard_full_page_screenshot(driver):
     """Take a full-page screenshot and convert to PDF."""
     print("\n6. Taking full-page screenshot of dashboard...")
-    # Get full page dimensions
     total_width = driver.execute_script("return Math.max(document.body.scrollWidth, document.documentElement.scrollWidth);")
     total_height = driver.execute_script("return Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);")
     print(f"   Page size: {total_width} x {total_height}")
     
-    # Temporarily set window size to full page
     original_size = driver.get_window_size()
     driver.set_window_size(max(total_width, 1600), max(total_height, 1200))
     time.sleep(3)
     
-    # Take screenshot
     screenshot_path = os.path.join(OUTPUT_DIR, f"dashboard_screenshot_{int(time.time())}.png")
     driver.save_screenshot(screenshot_path)
     print(f"   Screenshot saved: {screenshot_path}")
     
-    # Convert to PDF
+    # Convert to PDF – ensure RGB mode
     pdf_path = screenshot_path.replace(".png", ".pdf")
     image = Image.open(screenshot_path)
-    image.convert("RGB").save(pdf_path)
+    if image.mode != 'RGB':
+        image = image.convert('RGB')
+    image.save(pdf_path, "PDF", resolution=100.0)
     print(f"   PDF saved: {pdf_path}")
     
-    # Restore window size
     driver.set_window_size(original_size['width'], original_size['height'])
     return pdf_path
 
