@@ -1,6 +1,6 @@
 """
 Chatbot Sanity – Groq LLM generation, screenshot of response area
-(No launcher click – assume chatbot is already visible)
+Now uses generic input detection (works on any page)
 """
 
 import os
@@ -12,6 +12,7 @@ from datetime import datetime
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from docx import Document
 from docx.shared import Inches
 
@@ -152,12 +153,16 @@ def llm_evaluate(category, question, response):
     return result["verdict"], result["reason"]
 
 # ==========================================================
-# CHATBOT INTERACTION – NO LAUNCHER CLICK (chat already visible)
+# CHATBOT INTERACTION – GENERIC, ROBUST VERSION
 # ==========================================================
 def ask_chatbot_question(driver, question, idx):
+    """
+    Find the input field using generic heuristics, send the question,
+    and capture the response. Works on any page with a visible text input.
+    """
     # Reload page for clean state
     driver.get(CHATBOT_URL)
-    time.sleep(5)  # increased initial wait
+    time.sleep(5)
     
     # Dismiss disclaimer if present
     try:
@@ -168,46 +173,66 @@ def ask_chatbot_question(driver, question, idx):
     except:
         pass
     
-    # Scroll to bottom of page – chat is often at the bottom
+    # Scroll to bottom – chat input is often at the bottom
     driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
     time.sleep(2)
     
-    # Look for input field without clicking any launcher
-    input_locators = [
-        (By.CSS_SELECTOR, "input[placeholder*='message']"),
-        (By.CSS_SELECTOR, "textarea[placeholder*='message']"),
-        (By.CSS_SELECTOR, "input[placeholder*='Type']"),
-        (By.CSS_SELECTOR, "textarea"),
-        (By.XPATH, "//input[@type='text']"),
-        (By.XPATH, "//textarea"),
-        (By.CSS_SELECTOR, ".chat-input input"),
-        (By.CSS_SELECTOR, ".input-message"),
-    ]
+    # 1. Find ANY visible text input or textarea (heuristic)
     input_field = None
+    # First try common selectors
+    common_selectors = [
+        "input[type='text']", "textarea",
+        "input[placeholder]", "textarea[placeholder]",
+        "input:not([type='hidden']):not([type='submit'])",
+        "textarea:not([hidden])"
+    ]
+    # Also try XPath for any input/textarea that is visible
+    xpath = "//input[@type='text' and not(@hidden)] | //textarea[not(@hidden)]"
+    
     for attempt in range(3):
-        for by, val in input_locators:
+        for selector in common_selectors:
             try:
-                elem = WebDriverWait(driver, 10).until(EC.presence_of_element_located((by, val)))
-                if elem and elem.is_displayed() and elem.is_enabled():
-                    input_field = elem
+                elements = driver.find_elements(By.CSS_SELECTOR, selector)
+                for elem in elements:
+                    if elem.is_displayed() and elem.is_enabled():
+                        # Check if it has a placeholder containing 'message' or 'type'
+                        placeholder = elem.get_attribute("placeholder")
+                        if placeholder and ("message" in placeholder.lower() or "type" in placeholder.lower()):
+                            input_field = elem
+                            break
+                        # If no placeholder, but it's the only visible input, take it
+                        if not input_field:
+                            input_field = elem
+                if input_field:
                     break
             except:
                 continue
         if input_field:
             break
+        # If still not found, try XPath
+        try:
+            elems = driver.find_elements(By.XPATH, xpath)
+            for elem in elems:
+                if elem.is_displayed() and elem.is_enabled():
+                    input_field = elem
+                    break
+        except:
+            pass
+        if input_field:
+            break
         print(f"   Input field not found, retry {attempt+1}/3")
-        # On retry, try to click on the page to focus
-        driver.execute_script("document.body.click();")
         time.sleep(3)
+        # Click on the page to focus
+        driver.execute_script("document.body.click();")
     
     if not input_field:
-        # Save a debug screenshot to see what's on the page
         debug_path = os.path.join(SCREENSHOT_DIR, f"debug_no_input_{idx}.png")
         driver.save_screenshot(debug_path)
         print(f"   Debug screenshot saved: {debug_path}")
-        raise Exception("Could not find input field after multiple attempts")
+        # Instead of raising, return a placeholder so the report is still generated
+        return "Could not find input field", ""
     
-    # Type and send
+    # 2. Type and send
     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", input_field)
     time.sleep(0.5)
     try:
@@ -221,17 +246,42 @@ def ask_chatbot_question(driver, question, idx):
     input_field.send_keys(question)
     time.sleep(0.5)
     
-    if not click_if_present(driver, [(By.XPATH, "//button[contains(., 'Send')]")], timeout=2):
+    # Try to find send button
+    send_button = None
+    send_selectors = [
+        "button[type='submit']",
+        "button:contains('Send')",
+        "button:contains('Submit')",
+        "button[aria-label*='send']",
+        "button[aria-label*='Send']",
+        "//button[contains(., 'Send')]",
+        "//button[contains(., 'Submit')]"
+    ]
+    for selector in send_selectors:
+        try:
+            if selector.startswith("//"):
+                send_button = driver.find_element(By.XPATH, selector)
+            else:
+                send_button = driver.find_element(By.CSS_SELECTOR, selector)
+            if send_button and send_button.is_displayed() and send_button.is_enabled():
+                break
+        except:
+            continue
+    if send_button:
+        driver.execute_script("arguments[0].click();", send_button)
+    else:
         input_field.send_keys(Keys.ENTER)
     
     # Wait for response
     time.sleep(15)
     
-    # Find response
+    # 3. Extract response
     response_selectors = [
         (By.CSS_SELECTOR, ".bot-message"), (By.CSS_SELECTOR, ".latest-reply"),
         (By.CSS_SELECTOR, ".reply"), (By.CSS_SELECTOR, ".message.bot"),
-        (By.CSS_SELECTOR, ".bubble"), (By.XPATH, "//div[contains(@class, 'bot')]//p")
+        (By.CSS_SELECTOR, ".bubble"), (By.XPATH, "//div[contains(@class, 'bot')]//p"),
+        (By.XPATH, "//div[contains(@class, 'message')][last()]"),
+        (By.XPATH, "//div[contains(@class, 'chat')]//p[last()]")
     ]
     response_text = ""
     response_element = None
@@ -248,7 +298,7 @@ def ask_chatbot_question(driver, question, idx):
     if not response_text:
         response_text = "Could not extract chatbot response."
     
-    # Screenshot
+    # 4. Screenshot
     timestamp = int(time.time())
     screenshot_filename = f"response_{timestamp}_{idx}.png"
     screenshot_path = os.path.join(SCREENSHOT_DIR, screenshot_filename)
