@@ -1,6 +1,6 @@
 """
 Chatbot Sanity – Groq LLM generation, screenshot of response area
-Now uses generic input detection (works on any page)
+Handles iframe-embedded chatbots (like on DGCA website)
 """
 
 import os
@@ -153,17 +153,72 @@ def llm_evaluate(category, question, response):
     return result["verdict"], result["reason"]
 
 # ==========================================================
-# CHATBOT INTERACTION – GENERIC, ROBUST VERSION
+# CHATBOT INTERACTION – IFRAME SUPPORT
 # ==========================================================
+def find_input_in_iframes(driver):
+    """
+    Look for iframes that contain chat input, switch to them,
+    and return the input element.
+    """
+    # First, try to find input in main page
+    input_locators = [
+        (By.CSS_SELECTOR, "input[placeholder*='message']"),
+        (By.CSS_SELECTOR, "textarea[placeholder*='message']"),
+        (By.CSS_SELECTOR, "input[placeholder*='Type']"),
+        (By.CSS_SELECTOR, "textarea"),
+        (By.XPATH, "//input[@type='text']"),
+        (By.XPATH, "//textarea"),
+    ]
+    for by, val in input_locators:
+        try:
+            elem = driver.find_element(by, val)
+            if elem.is_displayed() and elem.is_enabled():
+                return elem, None
+        except:
+            pass
+
+    # If not found, look inside iframes
+    iframes = driver.find_elements(By.TAG_NAME, "iframe")
+    for iframe in iframes:
+        # Check if the iframe might contain a chat (by src or title)
+        src = iframe.get_attribute("src") or ""
+        title = iframe.get_attribute("title") or ""
+        if "chat" in src.lower() or "chat" in title.lower() or "widget" in src.lower():
+            driver.switch_to.frame(iframe)
+            time.sleep(1)
+            for by, val in input_locators:
+                try:
+                    elem = driver.find_element(by, val)
+                    if elem.is_displayed() and elem.is_enabled():
+                        return elem, iframe
+                except:
+                    pass
+            driver.switch_to.default_content()
+
+    # If still not found, try all iframes
+    for iframe in iframes:
+        driver.switch_to.frame(iframe)
+        time.sleep(1)
+        for by, val in input_locators:
+            try:
+                elem = driver.find_element(by, val)
+                if elem.is_displayed() and elem.is_enabled():
+                    return elem, iframe
+            except:
+                pass
+        driver.switch_to.default_content()
+
+    return None, None
+
 def ask_chatbot_question(driver, question, idx):
     """
-    Find the input field using generic heuristics, send the question,
-    and capture the response. Works on any page with a visible text input.
+    Find the input field (inside or outside iframe), send the question,
+    and capture the response.
     """
     # Reload page for clean state
     driver.get(CHATBOT_URL)
     time.sleep(5)
-    
+
     # Dismiss disclaimer if present
     try:
         accept_btn = wait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'I understand')]")))
@@ -172,67 +227,25 @@ def ask_chatbot_question(driver, question, idx):
         time.sleep(2)
     except:
         pass
-    
+
     # Scroll to bottom – chat input is often at the bottom
     driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
     time.sleep(2)
-    
-    # 1. Find ANY visible text input or textarea (heuristic)
-    input_field = None
-    # First try common selectors
-    common_selectors = [
-        "input[type='text']", "textarea",
-        "input[placeholder]", "textarea[placeholder]",
-        "input:not([type='hidden']):not([type='submit'])",
-        "textarea:not([hidden])"
-    ]
-    # Also try XPath for any input/textarea that is visible
-    xpath = "//input[@type='text' and not(@hidden)] | //textarea[not(@hidden)]"
-    
-    for attempt in range(3):
-        for selector in common_selectors:
-            try:
-                elements = driver.find_elements(By.CSS_SELECTOR, selector)
-                for elem in elements:
-                    if elem.is_displayed() and elem.is_enabled():
-                        # Check if it has a placeholder containing 'message' or 'type'
-                        placeholder = elem.get_attribute("placeholder")
-                        if placeholder and ("message" in placeholder.lower() or "type" in placeholder.lower()):
-                            input_field = elem
-                            break
-                        # If no placeholder, but it's the only visible input, take it
-                        if not input_field:
-                            input_field = elem
-                if input_field:
-                    break
-            except:
-                continue
-        if input_field:
-            break
-        # If still not found, try XPath
-        try:
-            elems = driver.find_elements(By.XPATH, xpath)
-            for elem in elems:
-                if elem.is_displayed() and elem.is_enabled():
-                    input_field = elem
-                    break
-        except:
-            pass
-        if input_field:
-            break
-        print(f"   Input field not found, retry {attempt+1}/3")
-        time.sleep(3)
-        # Click on the page to focus
-        driver.execute_script("document.body.click();")
-    
+
+    # Find input (handles iframe)
+    input_field, iframe = find_input_in_iframes(driver)
+
     if not input_field:
         debug_path = os.path.join(SCREENSHOT_DIR, f"debug_no_input_{idx}.png")
         driver.save_screenshot(debug_path)
         print(f"   Debug screenshot saved: {debug_path}")
-        # Instead of raising, return a placeholder so the report is still generated
         return "Could not find input field", ""
-    
-    # 2. Type and send
+
+    # If we are inside an iframe, we stay in it for the rest of the interaction
+    # The function find_input_in_iframes switches to the iframe if found.
+    # We need to remember that we are inside the iframe.
+
+    # Now type and send
     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", input_field)
     time.sleep(0.5)
     try:
@@ -245,8 +258,8 @@ def ask_chatbot_question(driver, question, idx):
         driver.execute_script("arguments[0].value = '';", input_field)
     input_field.send_keys(question)
     time.sleep(0.5)
-    
-    # Try to find send button
+
+    # Find send button (inside same context)
     send_button = None
     send_selectors = [
         "button[type='submit']",
@@ -271,11 +284,11 @@ def ask_chatbot_question(driver, question, idx):
         driver.execute_script("arguments[0].click();", send_button)
     else:
         input_field.send_keys(Keys.ENTER)
-    
+
     # Wait for response
     time.sleep(15)
-    
-    # 3. Extract response
+
+    # Extract response (still inside iframe if we were)
     response_selectors = [
         (By.CSS_SELECTOR, ".bot-message"), (By.CSS_SELECTOR, ".latest-reply"),
         (By.CSS_SELECTOR, ".reply"), (By.CSS_SELECTOR, ".message.bot"),
@@ -297,20 +310,20 @@ def ask_chatbot_question(driver, question, idx):
                 break
     if not response_text:
         response_text = "Could not extract chatbot response."
-    
-    # 4. Screenshot
+
+    # Screenshot (switch back to default content to capture full page)
+    driver.switch_to.default_content()
     timestamp = int(time.time())
     screenshot_filename = f"response_{timestamp}_{idx}.png"
     screenshot_path = os.path.join(SCREENSHOT_DIR, screenshot_filename)
     if response_element:
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", response_element)
-        time.sleep(0.5)
+        # Scroll the response element into view in the main page? Not possible, but we can just take full page.
         driver.save_screenshot(screenshot_path)
-        print(f"   Screenshot saved (response visible): {screenshot_path}")
+        print(f"   Screenshot saved (full page): {screenshot_path}")
     else:
         driver.save_screenshot(screenshot_path)
         print(f"   Screenshot saved (full page): {screenshot_path}")
-    
+
     return response_text, screenshot_path
 
 # ==========================================================
