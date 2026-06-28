@@ -1,6 +1,6 @@
 """
 Chatbot Sanity – Groq LLM generation, screenshot of response area
-Handles iframe-embedded chatbots (like on DGCA website)
+Uses the same reliable input detection as the local working script.
 """
 
 import os
@@ -57,7 +57,7 @@ CONVERSATION_SCENARIO = {
 }
 
 # ==========================================================
-# RULE‑BASED EVALUATION
+# RULE‑BASED EVALUATION (unchanged)
 # ==========================================================
 def is_fallback(resp):
     phrases = ["I am not able to answer", "not able to answer this query", "contact the DGCA Support"]
@@ -153,173 +153,102 @@ def llm_evaluate(category, question, response):
     return result["verdict"], result["reason"]
 
 # ==========================================================
-# CHATBOT INTERACTION – IFRAME SUPPORT
+# CHATBOT INTERACTION – EXACTLY LIKE LOCAL SCRIPT
 # ==========================================================
-def find_input_in_iframes(driver):
+def ask_chatbot_question(driver, question, idx):
     """
-    Look for iframes that contain chat input, switch to them,
-    and return the input element.
+    Uses the same approach as the local working script.
+    Reloads page, dismisses disclaimer, finds input using simple selectors.
     """
-    # First, try to find input in main page
+    driver.get(CHATBOT_URL)
+    time.sleep(3)   # same as local script
+
+    # Dismiss disclaimer (same as local script)
+    click_if_present(driver, [
+        (By.XPATH, "//button[contains(normalize-space(), 'I Understand')]"),
+        (By.XPATH, "//button[contains(normalize-space(), 'Accept')]"),
+        (By.XPATH, "//button[contains(normalize-space(), 'Continue')]"),
+        (By.XPATH, "//button[contains(normalize-space(), 'Got it')]"),
+    ], timeout=4)
+
+    # Input locators – exactly as in local script
     input_locators = [
-        (By.CSS_SELECTOR, "input[placeholder*='message']"),
-        (By.CSS_SELECTOR, "textarea[placeholder*='message']"),
-        (By.CSS_SELECTOR, "input[placeholder*='Type']"),
-        (By.CSS_SELECTOR, "textarea"),
+        (By.CSS_SELECTOR, "input[placeholder*='message' i]"),
+        (By.CSS_SELECTOR, "textarea[placeholder*='message' i]"),
+        (By.CSS_SELECTOR, "input[placeholder*='Type' i]"),
+        (By.CSS_SELECTOR, "textarea[placeholder*='Type' i]"),
+        (By.XPATH, "//*[@placeholder and (contains(translate(@placeholder,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'message') or contains(translate(@placeholder,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'type'))]"),
         (By.XPATH, "//input[@type='text']"),
         (By.XPATH, "//textarea"),
     ]
-    for by, val in input_locators:
-        try:
-            elem = driver.find_element(by, val)
-            if elem.is_displayed() and elem.is_enabled():
-                return elem, None
-        except:
-            pass
 
-    # If not found, look inside iframes
-    iframes = driver.find_elements(By.TAG_NAME, "iframe")
-    for iframe in iframes:
-        # Check if the iframe might contain a chat (by src or title)
-        src = iframe.get_attribute("src") or ""
-        title = iframe.get_attribute("title") or ""
-        if "chat" in src.lower() or "chat" in title.lower() or "widget" in src.lower():
-            driver.switch_to.frame(iframe)
-            time.sleep(1)
-            for by, val in input_locators:
-                try:
-                    elem = driver.find_element(by, val)
-                    if elem.is_displayed() and elem.is_enabled():
-                        return elem, iframe
-                except:
-                    pass
-            driver.switch_to.default_content()
-
-    # If still not found, try all iframes
-    for iframe in iframes:
-        driver.switch_to.frame(iframe)
-        time.sleep(1)
-        for by, val in input_locators:
-            try:
-                elem = driver.find_element(by, val)
-                if elem.is_displayed() and elem.is_enabled():
-                    return elem, iframe
-            except:
-                pass
-        driver.switch_to.default_content()
-
-    return None, None
-
-def ask_chatbot_question(driver, question, idx):
-    """
-    Find the input field (inside or outside iframe), send the question,
-    and capture the response.
-    """
-    # Reload page for clean state
-    driver.get(CHATBOT_URL)
-    time.sleep(5)
-
-    # Dismiss disclaimer if present
+    # Find input using same timeout as local (TIMEOUT from config, but we use 30)
     try:
-        accept_btn = wait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'I understand')]")))
-        accept_btn.click()
-        print("   Disclaimer accepted.")
-        time.sleep(2)
-    except:
-        pass
-
-    # Scroll to bottom – chat input is often at the bottom
-    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-    time.sleep(2)
-
-    # Find input (handles iframe)
-    input_field, iframe = find_input_in_iframes(driver)
-
-    if not input_field:
+        input_field = first_visible_element(driver, input_locators, timeout=30)
+    except Exception as e:
         debug_path = os.path.join(SCREENSHOT_DIR, f"debug_no_input_{idx}.png")
         driver.save_screenshot(debug_path)
         print(f"   Debug screenshot saved: {debug_path}")
         return "Could not find input field", ""
 
-    # If we are inside an iframe, we stay in it for the rest of the interaction
-    # The function find_input_in_iframes switches to the iframe if found.
-    # We need to remember that we are inside the iframe.
-
-    # Now type and send
-    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", input_field)
-    time.sleep(0.5)
-    try:
-        input_field.click()
-    except:
-        driver.execute_script("arguments[0].click();", input_field)
+    # Interact exactly as local script
+    input_field.click()
     try:
         input_field.clear()
-    except:
-        driver.execute_script("arguments[0].value = '';", input_field)
+    except Exception:
+        pass
     input_field.send_keys(question)
-    time.sleep(0.5)
 
-    # Find send button (inside same context)
-    send_button = None
-    send_selectors = [
-        "button[type='submit']",
-        "button:contains('Send')",
-        "button:contains('Submit')",
-        "button[aria-label*='send']",
-        "button[aria-label*='Send']",
-        "//button[contains(., 'Send')]",
-        "//button[contains(., 'Submit')]"
-    ]
-    for selector in send_selectors:
-        try:
-            if selector.startswith("//"):
-                send_button = driver.find_element(By.XPATH, selector)
-            else:
-                send_button = driver.find_element(By.CSS_SELECTOR, selector)
-            if send_button and send_button.is_displayed() and send_button.is_enabled():
-                break
-        except:
-            continue
-    if send_button:
-        driver.execute_script("arguments[0].click();", send_button)
-    else:
+    # Send button – same as local
+    if not click_if_present(driver, [
+        (By.XPATH, "//button[contains(normalize-space(), 'Send')]"),
+        (By.XPATH, "//button[contains(normalize-space(), 'Submit')]"),
+        (By.XPATH, "//button[contains(@aria-label, 'send')]"),
+    ], timeout=2):
         input_field.send_keys(Keys.ENTER)
 
-    # Wait for response
+    # Wait for response (15 seconds)
     time.sleep(15)
 
-    # Extract response (still inside iframe if we were)
-    response_selectors = [
-        (By.CSS_SELECTOR, ".bot-message"), (By.CSS_SELECTOR, ".latest-reply"),
-        (By.CSS_SELECTOR, ".reply"), (By.CSS_SELECTOR, ".message.bot"),
-        (By.CSS_SELECTOR, ".bubble"), (By.XPATH, "//div[contains(@class, 'bot')]//p"),
-        (By.XPATH, "//div[contains(@class, 'message')][last()]"),
-        (By.XPATH, "//div[contains(@class, 'chat')]//p[last()]")
+    # Extract response – same as local
+    response_locators = [
+        (By.CSS_SELECTOR, ".bot-message"),
+        (By.CSS_SELECTOR, ".latest-reply"),
+        (By.CSS_SELECTOR, ".reply"),
+        (By.CSS_SELECTOR, ".message.bot"),
+        (By.CSS_SELECTOR, ".bubble"),
+        (By.CSS_SELECTOR, "[class*='bot' i]"),
+        (By.CSS_SELECTOR, "[class*='reply' i]"),
+        (By.CSS_SELECTOR, "[class*='answer' i]"),
+        (By.CSS_SELECTOR, "[id*='chat-widget' i] p"),
+        (By.XPATH, "//*[contains(@class, 'bot-message') or contains(@class, 'bubble') or contains(@class, 'message') or contains(@class, 'reply') or contains(@class, 'answer')]"),
     ]
     response_text = ""
     response_element = None
-    for by, val in response_selectors:
-        elems = driver.find_elements(by, val)
-        if elems:
-            for e in reversed(elems):
-                if e.is_displayed() and e.text.strip():
-                    response_text = e.text.strip()
-                    response_element = e
+    for by, value in response_locators:
+        try:
+            elems = driver.find_elements(by, value)
+            elems = [e for e in elems if e.is_displayed() and (e.text.strip() or (e.get_attribute("innerText") or "").strip())]
+            if elems:
+                response_text = elems[-1].text or elems[-1].get_attribute("innerText") or ""
+                if response_text:
+                    response_element = elems[-1]
                     break
-            if response_text:
-                break
+        except:
+            continue
+
     if not response_text:
         response_text = "Could not extract chatbot response."
 
-    # Screenshot (switch back to default content to capture full page)
-    driver.switch_to.default_content()
+    # Screenshot
     timestamp = int(time.time())
     screenshot_filename = f"response_{timestamp}_{idx}.png"
     screenshot_path = os.path.join(SCREENSHOT_DIR, screenshot_filename)
     if response_element:
-        # Scroll the response element into view in the main page? Not possible, but we can just take full page.
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", response_element)
+        time.sleep(0.5)
         driver.save_screenshot(screenshot_path)
-        print(f"   Screenshot saved (full page): {screenshot_path}")
+        print(f"   Screenshot saved (response visible): {screenshot_path}")
     else:
         driver.save_screenshot(screenshot_path)
         print(f"   Screenshot saved (full page): {screenshot_path}")
